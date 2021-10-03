@@ -1,0 +1,29 @@
+[package]
+name = "tracking-allocator"
+description = "global allocator that provides hooks for tracking allocation events"
+version = "0.1.0"
+edition = "2018"
+repository = "https://github.com/tobz/tracking-allocator"
+license = "MPL-2.0"
+readme = "README.md"
+keywords = ["allocation", "observability", "memory"]
+categories = ["development-tools::profiling", "memory-management"]
+
+[[bench]]
+harness = false
+name = "baseline"
+
+[[bench]]
+harness = false
+name = "overhead"
+
+[[bench]]
+harness = false
+name = "registry"
+
+[dependencies]
+arc-swap = "1.4.0"
+im = "15.0.0"
+
+[dev-dependencies]
+criterion = { version = "0.3.5", default-features = false, features = ["cargo_bench_support", "html_reports"] }
