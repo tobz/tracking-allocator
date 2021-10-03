@@ -1,6 +1,6 @@
 # tracking-allocator
 
-A [`GlobalAlloc`]-compatible allocator implementation that provides the ability to track allocation events.
+A [`GlobalAlloc`](https://doc.rust-lang.org/stable/std/alloc/trait.GlobalAlloc.html)-compatible allocator implementation that provides the ability to track allocation events.
 
 ## examples
 
