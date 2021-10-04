@@ -15,7 +15,6 @@ use std::{
     borrow::Cow,
     cell::RefCell,
     error, fmt,
-    marker::PhantomData,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
@@ -24,6 +23,9 @@ use std::{
 
 use arc_swap::ArcSwapOption;
 use im::Vector;
+
+mod util;
+use crate::util::PhantomNotSend;
 
 /// Whether or not allocations should be tracked.
 static TRACKING_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -276,18 +278,24 @@ impl AllocationToken {
 ///
 /// ## Moving across threads
 ///
-/// [`AllocationGuard`] is specifically marked as `!Send`/`!Sync` as the active allocation group is
-/// tracked at a per-thread level.  If you acquire an `AllocationGuard` and need to resume
-/// computation on another thread, such as across an await point or when simply sending objects to
-/// another thread, you must first [`exit`][exit] the guard and move the resulting [`AllocationToken`].
-/// Once on the new thread, you can then reacquire the guard.
+/// [`AllocationGuard`] is specifically marked as `!Send` as the active allocation group is tracked
+/// at a per-thread level.  If you acquire an `AllocationGuard` and need to resume computation on
+/// another thread, such as across an await point or when simply sending objects to another thread,
+/// you must first [`exit`][exit] the guard and move the resulting [`AllocationToken`].  Once on the
+/// new thread, you can then reacquire the guard.
 ///
 /// [exit]: AllocationGuard::exit
 pub struct AllocationGuard {
     previous: Option<usize>,
     current: usize,
-    // Enforces !Send/!Sync as we can't directly implement negative trait bounds.
-    _t: PhantomData<*const ()>,
+
+    /// ```compile_fail
+    /// use tracking_allocator::AllocationGuard;
+    /// trait AssertSend: Send {}
+    ///
+    /// impl AssertSend for AllocationGuard {}
+    /// ```
+    _ns: PhantomNotSend,
 }
 
 impl AllocationGuard {
@@ -300,7 +308,7 @@ impl AllocationGuard {
         AllocationGuard {
             previous,
             current: id,
-            _t: PhantomData,
+            _ns: PhantomNotSend::default(),
         }
     }
 
