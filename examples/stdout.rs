@@ -1,4 +1,4 @@
-use tracking_allocator::{AllocationRegistry, AllocationTracker, Allocator};
+use tracking_allocator::{AllocationGroupToken, AllocationRegistry, AllocationTracker, Allocator};
 
 use std::sync::mpsc::{sync_channel, SyncSender};
 
@@ -83,7 +83,7 @@ fn main() {
 
     // Create a global allocation group.  We'll talk more about allocation groups, and what they're
     // used for, a little further down.
-    let global_token = AllocationRegistry::register();
+    let global_token = AllocationGroupToken::acquire();
     let _global_guard = global_token.enter();
 
     // Even with the tracker set, we're still not tracking allocations yet.  We need to enable tracking explicitly.
@@ -97,7 +97,7 @@ fn main() {
     //
     // Callers can attach tags to their group by calling `AllocationRegistry::register_with_tags`
     // instead, but we're going to register our group without any tags for now.
-    let local_token = AllocationRegistry::register();
+    let local_token = AllocationGroupToken::acquire();
 
     // Now, get an allocation guard from our token.  This guard ensures the allocation group is
     // marked as the current allocation group, so that our allocations are properly associated.

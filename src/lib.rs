@@ -11,9 +11,6 @@
 #![warn(clippy::all)]
 #![warn(clippy::cargo)]
 use std::{
-    alloc::{GlobalAlloc, Layout, System},
-    borrow::Cow,
-    cell::RefCell,
     error, fmt,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -21,28 +18,15 @@ use std::{
     },
 };
 
-use arc_swap::ArcSwapOption;
-use im::Vector;
-
+mod allocator;
+mod token;
 mod util;
-use crate::util::PhantomNotSend;
+
+pub use crate::allocator::Allocator;
+pub use crate::token::{AllocationGroupToken, AllocationGuard};
 
 /// Whether or not allocations should be tracked.
 static TRACKING_ENABLED: AtomicBool = AtomicBool::new(false);
-
-thread_local! {
-    /// The currently executing allocation token.
-    ///
-    /// Any allocations which occur on this thread will be associated with whichever token is
-    /// present at the time of the allocation.
-    pub(crate) static CURRENT_ALLOCATION_TOKEN: RefCell<Option<usize>> = RefCell::new(None);
-}
-
-type TokenRegistry = Vector<Option<&'static [(&'static str, &'static str)]>>;
-
-// Holds the token registry, which maps allocation tokens to a set of static tags that describe who
-// or what the allocations tied to that token belong to.
-static TOKEN_REGISTRY: ArcSwapOption<TokenRegistry> = ArcSwapOption::const_empty();
 
 // The global tracker.  This is called for all allocations, passing through the information to
 // whichever implementation is currently set.
@@ -182,180 +166,6 @@ impl AllocationRegistry {
         GLOBAL_TRACKER = None;
         GLOBAL_INIT.store(UNINITIALIZED, Ordering::SeqCst);
     }
-
-    /// Registers an allocation group.
-    pub fn register() -> AllocationToken {
-        let mut id = 0;
-        TOKEN_REGISTRY.rcu(|registry| {
-            let mut registry = registry
-                .as_ref()
-                .map(|inner| inner.as_ref().clone())
-                .unwrap_or_default();
-
-            id = registry.len();
-            registry.push_back(None);
-            Some(Arc::new(registry))
-        });
-
-        AllocationToken(id)
-    }
-
-    /// Registers an allocation group, with tags.
-    ///
-    /// While allocation groups are primarily represented by their [`AllocationToken`], users can
-    /// use this method to attach specific tags -- or key/value string pairs -- to the group.  These
-    /// tags will be provided to the global tracker whenever an allocation event is associated with
-    /// the allocation group.
-    ///
-    /// ## Memory usage
-    ///
-    /// In order to minimize any allocations while in the process of tracking normal allocations, we
-    /// rely on utilizing only static references to data.  If the tags given are not already
-    /// `'static` references, they will be leaked in order to make them `'static`.  Thus, callers
-    /// should take care to avoid registering tokens on an ongoing basis when utilizing owned tags as
-    /// this could create a persistent and ever-growing memory leak over the life of the process.
-    pub fn register_with_tags<I, K, V>(tags: I) -> AllocationToken
-    where
-        I: IntoIterator,
-        I::Item: AsRef<(K, V)>,
-        K: Into<Cow<'static, str>> + Clone,
-        V: Into<Cow<'static, str>> + Clone,
-    {
-        let tags = tags
-            .into_iter()
-            .map(|tags| {
-                let (k, v) = tags.as_ref();
-                let sk = match k.clone().into() {
-                    Cow::Borrowed(rs) => rs,
-                    Cow::Owned(os) => Box::leak(os.into_boxed_str()),
-                };
-
-                let sv = match v.clone().into() {
-                    Cow::Borrowed(rs) => rs,
-                    Cow::Owned(os) => Box::leak(os.into_boxed_str()),
-                };
-
-                (sk, sv)
-            })
-            .collect::<Vec<_>>();
-        let tags = &*Box::leak(tags.into_boxed_slice());
-
-        let mut id = 0;
-        TOKEN_REGISTRY.rcu(|registry| {
-            let mut registry = registry
-                .as_ref()
-                .map(|inner| inner.as_ref().clone())
-                .unwrap_or_default();
-
-            id = registry.len();
-            registry.push_back(Some(tags));
-            Some(Arc::new(registry))
-        });
-
-        AllocationToken(id)
-    }
-}
-
-/// A token that uniquely identifies an allocation group.
-pub struct AllocationToken(usize);
-
-impl AllocationToken {
-    /// Marks the associated allocation group as the active allocation group on this thread.
-    ///
-    /// If another allocation group is currently active, it is replaced, and restored either when
-    /// this allocation guard is dropped, or when [`AllocationGuard::exit`] is called.
-    pub fn enter(self) -> AllocationGuard {
-        AllocationGuard::enter(self)
-    }
-}
-
-/// Guard that updates the current thread to track allocations for the associated allocation group.
-///
-/// ## Drop behavior
-///
-/// This guard has a [`Drop`] implementation that resets the active allocation group back to the
-/// previous allocation group.
-///
-/// ## Moving across threads
-///
-/// [`AllocationGuard`] is specifically marked as `!Send` as the active allocation group is tracked
-/// at a per-thread level.  If you acquire an `AllocationGuard` and need to resume computation on
-/// another thread, such as across an await point or when simply sending objects to another thread,
-/// you must first [`exit`][exit] the guard and move the resulting [`AllocationToken`].  Once on the
-/// new thread, you can then reacquire the guard.
-///
-/// [exit]: AllocationGuard::exit
-pub struct AllocationGuard {
-    previous: Option<usize>,
-    current: usize,
-
-    /// ```compile_fail
-    /// use tracking_allocator::AllocationGuard;
-    /// trait AssertSend: Send {}
-    ///
-    /// impl AssertSend for AllocationGuard {}
-    /// ```
-    _ns: PhantomNotSend,
-}
-
-impl AllocationGuard {
-    pub(crate) fn enter(token: AllocationToken) -> AllocationGuard {
-        let id = token.0;
-
-        // Set the current allocation token to the new token, keeping the previous.
-        let previous = CURRENT_ALLOCATION_TOKEN.with(|current| current.replace(Some(id)));
-
-        AllocationGuard {
-            previous,
-            current: id,
-            _ns: PhantomNotSend::default(),
-        }
-    }
-
-    /// Unmarks this allocation group as the active allocation group on this thread, resetting the
-    /// active allocation group to the previous value.
-    pub fn exit(mut self) -> AllocationToken {
-        self.exit_inner()
-    }
-
-    fn exit_inner(&mut self) -> AllocationToken {
-        // Reset the current allocation token to the previous one.
-        CURRENT_ALLOCATION_TOKEN.with(|current| {
-            *current.borrow_mut() = self.previous;
-        });
-
-        AllocationToken(self.current)
-    }
-}
-
-impl Drop for AllocationGuard {
-    fn drop(&mut self) {
-        let _ = self.exit_inner();
-    }
-}
-
-/// Tracking allocator implementation.
-///
-/// This allocator must be installed via `#[global_allocator]` in order to take effect.  More
-/// information and examples on how to do so can be found in the top-level crate documentation.
-pub struct Allocator;
-
-unsafe impl GlobalAlloc for Allocator {
-    #[track_caller]
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let size = layout.size();
-        let ptr = System.alloc(layout);
-        let addr = ptr as usize;
-        track_allocation(addr, size);
-        ptr
-    }
-
-    #[track_caller]
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let addr = ptr as usize;
-        System.dealloc(ptr, layout);
-        track_deallocation(addr);
-    }
 }
 
 #[inline(always)]
@@ -375,43 +185,5 @@ fn get_global_tracker() -> Option<&'static Tracker> {
             .as_ref()
             .expect("global tracked marked as initialized, but failed to unwrap");
         Some(tracker)
-    }
-}
-
-struct AllocationGroup {
-    id: usize,
-    tags: Option<&'static [(&'static str, &'static str)]>,
-}
-
-#[inline(always)]
-fn get_active_allocation_group() -> Option<AllocationGroup> {
-    // See if there's an active allocation token on this thread.
-    CURRENT_ALLOCATION_TOKEN
-        .with(|current| *current.borrow())
-        .and_then(|id| {
-            // Try and grab the tags from the registry.  This shouldn't ever failed since we wrap
-            // registry IDs in AllocationToken which only we can create.
-            let registry_guard = TOKEN_REGISTRY.load();
-            let registry = registry_guard
-                .as_ref()
-                .expect("allocation token cannot be set unless registry has been created");
-            registry
-                .get(id)
-                .copied()
-                .map(|tags| AllocationGroup { id, tags })
-        })
-}
-
-fn track_allocation(addr: usize, size: usize) {
-    if let Some(tracker) = get_global_tracker() {
-        if let Some(group) = get_active_allocation_group() {
-            tracker.allocated(addr, size, group.id, group.tags)
-        }
-    }
-}
-
-fn track_deallocation(addr: usize) {
-    if let Some(tracker) = get_global_tracker() {
-        tracker.deallocated(addr)
     }
 }
