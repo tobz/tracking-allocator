@@ -20,10 +20,14 @@ use std::{
 
 mod allocator;
 mod token;
+#[cfg(feature = "tracing-compat")]
+mod tracing;
 mod util;
 
 pub use crate::allocator::Allocator;
 pub use crate::token::{AllocationGroupToken, AllocationGuard};
+#[cfg(feature = "tracing-compat")]
+pub use crate::tracing::AllocationLayer;
 
 /// Whether or not allocations should be tracked.
 static TRACKING_ENABLED: AtomicBool = AtomicBool::new(false);

@@ -1,4 +1,4 @@
-use std::{borrow::Cow, cell::RefCell, sync::Arc};
+use std::{borrow::Cow, cell::RefCell, mem, sync::Arc};
 
 use arc_swap::ArcSwapOption;
 use im::Vector;
@@ -55,17 +55,15 @@ impl AllocationGroupToken {
     /// `'static` references, they will be leaked in order to make them `'static`.  Thus, callers
     /// should take care to avoid registering tokens on an ongoing basis when utilizing owned tags as
     /// this could create a persistent and ever-growing memory leak over the life of the process.
-    pub fn acquire_with_tags<I, K, V>(tags: I) -> AllocationGroupToken
+    pub fn acquire_with_tags<K, V>(tags: &[(K, V)]) -> AllocationGroupToken
     where
-        I: IntoIterator,
-        I::Item: AsRef<(K, V)>,
         K: Into<Cow<'static, str>> + Clone,
         V: Into<Cow<'static, str>> + Clone,
     {
         let tags = tags
-            .into_iter()
-            .map(|tags| {
-                let (k, v) = tags.as_ref();
+            .iter()
+            .map(|tag| {
+                let (k, v) = tag;
                 let sk = match k.clone().into() {
                     Cow::Borrowed(rs) => rs,
                     Cow::Owned(os) => Box::leak(os.into_boxed_str()),
@@ -96,6 +94,10 @@ impl AllocationGroupToken {
         AllocationGroupToken(id)
     }
 
+    pub(crate) fn into_unsafe(self) -> UnsafeAllocationGroupToken {
+        UnsafeAllocationGroupToken::new(self.0)
+    }
+
     /// Marks the associated allocation group as the active allocation group on this thread.
     ///
     /// If another allocation group is currently active, it is replaced, and restored either when
@@ -105,6 +107,72 @@ impl AllocationGroupToken {
     }
 }
 
+#[cfg(feature = "tracing-compat")]
+impl AllocationGroupToken {
+    /// Attaches this allocation group to a tracing span.
+    ///
+    /// When the span is entered or exited, the allocation group will also transition from idle to
+    /// active, creating the beavhior of associating all allocations within the during of the
+    /// entered span with the given allocation group.
+    pub fn attach_to_span(self, span: &tracing::Span) {
+        use crate::tracing::WithAllocationGroup;
+
+        let mut unsafe_token = Some(self.into_unsafe());
+
+        tracing::dispatcher::get_default(move |dispatch| {
+            if let Some(id) = span.id() {
+                if let Some(ctx) = dispatch.downcast_ref::<WithAllocationGroup>() {
+                    let unsafe_token = unsafe_token.take().expect("token already consumed");
+                    return ctx.with_allocation_group(dispatch, &id, unsafe_token);
+                }
+            }
+        });
+    }
+}
+
+enum GuardState {
+    // Guard is idle.  We aren't the active allocation group.
+    Idle(usize),
+    // Guard is active.  We're the active allocation group, so we hold on to the previous
+    // allocation group ID, if there was one, so we can switch back to it when we transition to
+    // being idle.
+    Active(Option<usize>),
+}
+
+impl GuardState {
+    fn idle(id: usize) -> Self {
+        Self::Idle(id)
+    }
+
+    fn transition_to_active(&mut self) {
+        let new_state = match self {
+            Self::Idle(id) => {
+                // Set the current allocation token to the new token, keeping the previous.
+                let previous = CURRENT_ALLOCATION_TOKEN.with(|current| current.replace(Some(*id)));
+
+                Self::Active(previous)
+            }
+            Self::Active(_) => panic!("transitioning active->active is invalid"),
+        };
+        *self = new_state;
+    }
+
+    fn transition_to_idle(&mut self) -> usize {
+        let (id, new_state) = match self {
+            Self::Idle(_) => panic!("transitioning idle->idle is invalid"),
+            Self::Active(previous) => {
+                // Reset the current allocation token to the previous one.
+                let current = CURRENT_ALLOCATION_TOKEN.with(|current| {
+                    let old = mem::replace(&mut *current.borrow_mut(), previous.take());
+                    old.expect("transitioned to idle state with empty CURRENT_ALLOCATION_TOKEN")
+                });
+                (current, Self::Idle(current))
+            }
+        };
+        *self = new_state;
+        id
+    }
+}
 /// Guard that updates the current thread to track allocations for the associated allocation group.
 ///
 /// ## Drop behavior
@@ -122,8 +190,7 @@ impl AllocationGroupToken {
 ///
 /// [exit]: AllocationGuard::exit
 pub struct AllocationGuard {
-    previous: Option<usize>,
-    current: usize,
+    state: GuardState,
 
     /// ```compile_fail
     /// use tracking_allocator::AllocationGuard;
@@ -136,14 +203,11 @@ pub struct AllocationGuard {
 
 impl AllocationGuard {
     pub(crate) fn enter(token: AllocationGroupToken) -> AllocationGuard {
-        let id = token.0;
-
-        // Set the current allocation token to the new token, keeping the previous.
-        let previous = CURRENT_ALLOCATION_TOKEN.with(|current| current.replace(Some(id)));
+        let mut state = GuardState::idle(token.0);
+        state.transition_to_active();
 
         AllocationGuard {
-            previous,
-            current: id,
+            state,
             _ns: PhantomNotSend::default(),
         }
     }
@@ -156,17 +220,35 @@ impl AllocationGuard {
 
     fn exit_inner(&mut self) -> AllocationGroupToken {
         // Reset the current allocation token to the previous one.
-        CURRENT_ALLOCATION_TOKEN.with(|current| {
-            *current.borrow_mut() = self.previous;
-        });
+        let current = self.state.transition_to_idle();
 
-        AllocationGroupToken(self.current)
+        AllocationGroupToken(current)
     }
 }
 
 impl Drop for AllocationGuard {
     fn drop(&mut self) {
         let _ = self.exit_inner();
+    }
+}
+
+pub(crate) struct UnsafeAllocationGroupToken {
+    state: GuardState,
+}
+
+impl UnsafeAllocationGroupToken {
+    pub fn new(id: usize) -> Self {
+        Self {
+            state: GuardState::idle(id),
+        }
+    }
+
+    pub fn enter(&mut self) {
+        self.state.transition_to_active();
+    }
+
+    pub fn exit(&mut self) {
+        let _ = self.state.transition_to_idle();
     }
 }
 
@@ -190,16 +272,15 @@ pub(crate) fn get_active_allocation_group() -> Option<AllocationGroupMetadata> {
     // See if there's an active allocation token on this thread.
     CURRENT_ALLOCATION_TOKEN
         .with(|current| *current.borrow())
-        .and_then(|id| {
+        .map(|id| {
             // Try and grab the tags from the registry.  This shouldn't ever failed since we wrap
             // registry IDs in AllocationToken which only we can create.
             let registry_guard = TOKEN_REGISTRY.load();
             let registry = registry_guard
                 .as_ref()
                 .expect("allocation token cannot be set unless registry has been created");
-            registry
-                .get(id)
-                .copied()
-                .map(|tags| AllocationGroupMetadata { id, tags })
+            let tags = registry.get(id).copied().flatten();
+
+            AllocationGroupMetadata { id, tags }
         })
 }
