@@ -20,8 +20,12 @@ impl WithAllocationGroup {
     }
 }
 
-/// [`Tracing`] is a [`tracing_subscriber::Layer`] that handles entering and exiting an allocation
-/// group guard as the span it is attached to is entered and exited itself.
+/// [`AllocationLayer`] is a [`tracing_subscriber::Layer`] that handles entering and exiting an allocation
+/// group as the span it is attached to is itself entered and exited.
+///
+/// More information on using this layer can be found in the examples, or directly in the
+/// `tracing_subscriber` docs, found [here][tracing_subscriber::layer].
+#[cfg_attr(docsrs, doc(cfg(feature = "tracing-compat")))]
 pub struct AllocationLayer<S> {
     ctx: WithAllocationGroup,
     _subscriber: PhantomData<fn(S)>,

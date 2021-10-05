@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{alloc::System, time::Duration};
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use tracking_allocator::{AllocationRegistry, AllocationTracker, Allocator};
@@ -8,7 +8,7 @@ use tracking_allocator::{AllocationRegistry, AllocationTracker, Allocator};
 // tracking is enabled, and so on.  The `baseline.rs` benches are what we use to establish our
 // baselines for performance of various basic tasks that involve allocation and deallocation.
 #[global_allocator]
-static ALLOCATOR: Allocator = Allocator;
+static ALLOCATOR: Allocator<System> = Allocator::system();
 
 struct NoopTracker;
 

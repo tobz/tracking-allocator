@@ -9,6 +9,10 @@ readme = "README.md"
 keywords = ["allocation", "observability", "memory"]
 categories = ["development-tools::profiling", "memory-management"]
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [[bench]]
 harness = false
 name = "baseline"

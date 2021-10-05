@@ -9,6 +9,7 @@ use tracking_allocator::{
 };
 
 use std::{
+    alloc::System,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{sync_channel, SyncSender},
@@ -22,8 +23,13 @@ use std::{
 // `tracking_allocator`.  This allocator is purely a facade to the logic provided by the crate,
 // which is controlled by setting a global tracker and registering allocation groups.  All of that
 // is covered below.
+//
+// As well, you can see here that we're wrapping the system allocator.  If you want, you can
+// construct `Allocator` by wrapping another allocator that implements `GlobalAlloc`.  Since this is
+// a static, you need a way to construct ther allocator to be wrapped in a const fashion, but it
+// _is_ possible.
 #[global_allocator]
-static GLOBAL: Allocator = Allocator;
+static GLOBAL: Allocator<System> = Allocator::system();
 
 enum AllocationEvent {
     Allocated {

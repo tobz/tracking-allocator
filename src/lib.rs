@@ -1,12 +1,39 @@
 //! # tracking-allocator
 //!
-//! This crate provides a global allocator implementation (compatible with [`GlobalAlloc`]) that
+//! This crate provides a global allocator implementation (compatible with [`GlobalAlloc`][global_alloc]) that
 //! allows users to trace allocations and deallocations directly.  Allocation tokens can also be
 //! registered, which allows users to get an identifier that has associated metadata, which when
 //! used, can enhance the overall tracking of allocations.
 //!
-//! While this allocator must be installed as the global allocator for the process, it ultimately
-//! defers to the [`std::alloc::System`] allocator to perform the actual allocations.
+//! ## high-level usage
+//!
+//! `tracking-allocator` has three main components:
+//! - [`Allocator`], a [`GlobalAlloc`][global_alloc]-compatible allocator that intercepts allocations and deallocations
+//! - the [`AllocationTracker`] trait, which defines an interface for receiving allocation and deallocation events
+//! - [`AllocationGroupToken`] which is used to associate allocation events with a logical group
+//!
+//! These components all work in tandem together.  Once the allocator is installed, an appropriate
+//! tracker implementation can also be installed to handle the allocation and deallocation events as
+//! desired, whether you're simply tracking the frequency of allocations, or trying to track the
+//! real-time usage of different allocation groups.  Allocation groups can be created on-demand, and
+//! with optional string key/values for metadata.
+//!
+//! Additionally, tracking can be enabled and disabled at runtime, allowing you to make the choice
+//! of when to incur the performance overhead of tracking.
+//!
+//! ## examples
+//!
+//! Two main examples are provided: `stdout` and `tracing`.  Both examples demonstrate how to
+//! effectively to use the crate, but the `tracing` example is specific to using the
+//! `tracing-compat` feature.
+//!
+//! The examples are considered the primary documentation for the "how" of using this crate
+//! effectively.  They are extensively documented, and touch on the finer points of writing a
+//! tracker implementation, including how to avoid specific pitfalls related to deadlocking and
+//! reentrant code that could lead to stack overflows.
+//!
+//! [global_alloc]: std::alloc::GlobalAlloc
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
 #![warn(clippy::all)]
 #![warn(clippy::cargo)]
