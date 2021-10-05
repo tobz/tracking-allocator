@@ -73,6 +73,18 @@ pub trait AllocationTracker {
     /// Tracks when an allocation has occurred.
     ///
     /// If any tags were associated with the allocation group, they will be provided.
+    ///
+    /// ## Correctness
+    /// Care should be taken to avoid allocating or deallocating in this method itself, as it could
+    /// cause a recursive call that overflows the stack.  Likewise, care should be taken to avoid
+    /// utilizing resources which depend on mutual exclusion i.e. locks which protect resources that
+    /// may allocate, as this can potentially lead to deadlocking if not capable of reentrant
+    /// locking
+    ///
+    /// Implementors should prefer data structures that can pre-allocate their memory, such as
+    /// bounded channels, as well as intermediate structures that can be allocated entirely on the
+    /// stack.  This will ensure that no allocations are required in this method, while still
+    /// allowing code to be written that isn't unnecessarily restrictive.
     fn allocated(
         &self,
         addr: usize,
@@ -82,6 +94,18 @@ pub trait AllocationTracker {
     );
 
     /// Tracks when a deallocation has occurred.
+    ///
+    /// ## Correctness
+    /// Care should be taken to avoid allocating or deallocating in this method itself, as it could
+    /// cause a recursive call that overflows the stack.  Likewise, care should be taken to avoid
+    /// utilizing resources which depend on mutual exclusion i.e. locks which protect resources that
+    /// may allocate, as this can potentially lead to deadlocking if not capable of reentrant
+    /// locking
+    ///
+    /// Implementors should prefer data structures that can pre-allocate their memory, such as
+    /// bounded channels, as well as intermediate structures that can be allocated entirely on the
+    /// stack.  This will ensure that no allocations are required in this method, while still
+    /// allowing code to be written that isn't unnecessarily restrictive.
     fn deallocated(&self, addr: usize);
 }
 
@@ -188,7 +212,7 @@ impl AllocationRegistry {
     ///
     /// If you can ensure that only one thread is running, thus ensuring there will be no competing
     /// concurrent accesses, then this is safe.  Also, of course, this leaks whatever allocation
-    /// tracker was set before. Likely not a problem in tests, but for posterityy's sake..
+    /// tracker was set before. Likely not a problem in tests, but for posterity's sake..
     ///
     /// YOU'VE BEEN WARNED. :)
     #[doc(hidden)]

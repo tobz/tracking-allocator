@@ -22,13 +22,14 @@ thread_local! {
 
 /// A token that uniquely identifies an allocation group.
 ///
-/// Allocation groups are the core grouping mechanism of `tracking-allocator` and drive much of its[`Allocation]
+/// Allocation groups are the core grouping mechanism of `tracking-allocator` and drive much of its
 /// behavior.  While the allocator must be overridden, and a global track provided, no allocations
 /// are tracked unless a group is associated with the current thread making the allocation.
 ///
 /// Practically speaking, allocation groups are simply an internal identifier that is used to
 /// identify the "owner" of an allocation.  Additional tags can be provided when acquire an
-/// allocation group token, which is provided to [`AllocationTracker`] whenever an allocation occurs.
+/// allocation group token, which is provided to [`AllocationTracker`][crate::AllocationTracker]
+/// whenever an allocation occurs.
 ///
 /// ## Usage
 ///
