@@ -115,6 +115,7 @@ impl AllocationGroupToken {
         AllocationGroupToken(id)
     }
 
+    #[cfg(feature = "tracing-compat")]
     pub(crate) fn into_unsafe(self) -> UnsafeAllocationGroupToken {
         UnsafeAllocationGroupToken::new(self.0)
     }
@@ -145,7 +146,7 @@ impl AllocationGroupToken {
             if let Some(id) = span.id() {
                 if let Some(ctx) = dispatch.downcast_ref::<WithAllocationGroup>() {
                     let unsafe_token = unsafe_token.take().expect("token already consumed");
-                    return ctx.with_allocation_group(dispatch, &id, unsafe_token);
+                    ctx.with_allocation_group(dispatch, &id, unsafe_token);
                 }
             }
         });
@@ -268,10 +269,12 @@ impl Drop for AllocationGuard {
 ///
 /// Thus, we build off of that invariant, and use this stripped down token to manually enter and
 /// exit the allocation group in a specialized `tracing_subscriber` layer that we control.
+#[cfg(feature = "tracing-compat")]
 pub(crate) struct UnsafeAllocationGroupToken {
     state: GuardState,
 }
 
+#[cfg(feature = "tracing-compat")]
 impl UnsafeAllocationGroupToken {
     /// Creates a new `UnsafeAllocationGroupToken`.
     pub fn new(id: usize) -> Self {
