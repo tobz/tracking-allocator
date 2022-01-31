@@ -1,7 +1,7 @@
 use std::{alloc::System, time::Duration};
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use tracking_allocator::{AllocationRegistry, AllocationTracker, Allocator};
+use tracking_allocator::{AllocationGroupId, AllocationRegistry, AllocationTracker, Allocator};
 
 // Every benchmark will now run through the tracking allocator.  All we're measuring here is the
 // various amounts of overhead depending on whether an allocation tracker is set, whether or not
@@ -17,7 +17,7 @@ impl AllocationTracker for NoopTracker {
         &self,
         _addr: usize,
         _size: usize,
-        _group_id: usize,
+        _group_id: AllocationGroupId,
         _tags: Option<&'static [(&'static str, &'static str)]>,
     ) {
     }
