@@ -1,4 +1,10 @@
-use tracking_allocator::{AllocationGroupToken, AllocationRegistry, AllocationTracker, Allocator};
+use tracking_allocator::{
+    AllocationGroupId,
+    AllocationGroupToken,
+    AllocationRegistry,
+    AllocationTracker,
+    Allocator,
+};
 
 use std::{
     alloc::System,
@@ -21,7 +27,7 @@ enum AllocationEvent {
     Allocated {
         addr: usize,
         size: usize,
-        group_id: usize,
+        group_id: AllocationGroupId,
         tags: Option<&'static [(&'static str, &'static str)]>,
     },
     Deallocated {
@@ -52,7 +58,7 @@ impl AllocationTracker for ChannelBackedTracker {
         &self,
         addr: usize,
         size: usize,
-        group_id: usize,
+        group_id: AllocationGroupId,
         tags: Option<&'static [(&'static str, &'static str)]>,
     ) {
         // Allocations have all the pertinent information upfront, which you must store if you want
@@ -145,7 +151,7 @@ fn main() {
                 tags,
             } => {
                 println!(
-                    "allocation -> addr={:#x} size={} group_id={} tags={:?}",
+                    "allocation -> addr={:#x} size={} group_id={:?} tags={:?}",
                     addr, size, group_id, tags
                 );
             }

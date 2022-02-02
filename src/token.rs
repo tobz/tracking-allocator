@@ -26,7 +26,7 @@ thread_local! {
     ///
     /// Any allocations which occur on this thread will be associated with whichever token is
     /// present at the time of the allocation.
-    static CURRENT_ALLOCATION_TOKEN: RefCell<Option<usize>> = RefCell::new(None);
+    static CURRENT_ALLOCATION_TOKEN: RefCell<Option<AllocationGroupId>> = RefCell::new(None);
 
     // Whether or not a token registry update is in progress.
     //
@@ -123,6 +123,10 @@ pub(crate) fn within_token_registry_rcu() -> bool {
     TOKEN_REGISTRY_RCU_IN_FLIGHT.with(|flag| flag.load(Ordering::Acquire))
 }
 
+/// The identifier that uniquely identifiers an allocation group.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct AllocationGroupId(usize);
+
 /// A token that uniquely identifies an allocation group.
 ///
 /// Allocation groups are the core grouping mechanism of `tracking-allocator` and drive much of its
@@ -145,13 +149,18 @@ pub(crate) fn within_token_registry_rcu() -> bool {
 /// [`AllocationGuard`] also tracks if another allocation group was active prior to entering, and
 /// ensures it is set back as the active allocation group when the guard is dropped.  This allows
 /// allocation groups to be nested within each other.
-pub struct AllocationGroupToken(usize);
+pub struct AllocationGroupToken(AllocationGroupId);
 
 impl AllocationGroupToken {
     /// Acquires an allocation group token.
     pub fn acquire() -> AllocationGroupToken {
         let id = register_token::<String, String>(None);
-        AllocationGroupToken(id)
+        AllocationGroupToken(AllocationGroupId(id))
+    }
+
+    /// The ID associated with this allocation group.
+    pub fn id(&self) -> AllocationGroupId {
+        self.0.clone()
     }
 
     /// Acquires an allocation group token, with tags.
@@ -174,7 +183,7 @@ impl AllocationGroupToken {
         V: Into<Cow<'static, str>> + Clone,
     {
         let id = register_token(Some(tags));
-        AllocationGroupToken(id)
+        AllocationGroupToken(AllocationGroupId(id))
     }
 
     #[cfg(feature = "tracing-compat")]
@@ -217,11 +226,11 @@ impl AllocationGroupToken {
 
 enum GuardState {
     // Guard is idle.  We aren't the active allocation group.
-    Idle(usize),
+    Idle(AllocationGroupId),
     // Guard is active.  We're the active allocation group, so we hold on to the previous
     // allocation group ID, if there was one, so we can switch back to it when we transition to
     // being idle.
-    Active(Option<usize>),
+    Active(Option<AllocationGroupId>),
 }
 
 impl GuardState {
@@ -229,7 +238,7 @@ impl GuardState {
         let new_state = match self {
             Self::Idle(id) => {
                 // Set the current allocation token to the new token, keeping the previous.
-                let previous = CURRENT_ALLOCATION_TOKEN.with(|current| current.replace(Some(*id)));
+                let previous = CURRENT_ALLOCATION_TOKEN.with(|current| current.replace(Some(id.clone())));
                 Self::Active(previous)
             }
             Self::Active(ref previous) => {
@@ -245,7 +254,7 @@ impl GuardState {
         *self = new_state;
     }
 
-    fn transition_to_idle(&mut self) -> usize {
+    fn transition_to_idle(&mut self) -> AllocationGroupId {
         let (id, new_state) = match self {
             Self::Idle(_) => panic!(
                 "tid {:?}: transitioning idle->idle is invalid",
@@ -257,7 +266,7 @@ impl GuardState {
                     let old = mem::replace(&mut *current.borrow_mut(), previous.take());
                     old.expect("transitioned to idle state with empty CURRENT_ALLOCATION_TOKEN")
                 });
-                (current, Self::Idle(current))
+                (current.clone(), Self::Idle(current))
             }
         };
         *self = new_state;
@@ -346,7 +355,7 @@ pub(crate) struct UnsafeAllocationGroupToken {
 #[cfg(feature = "tracing-compat")]
 impl UnsafeAllocationGroupToken {
     /// Creates a new `UnsafeAllocationGroupToken`.
-    pub fn new(id: usize) -> Self {
+    pub fn new(id: AllocationGroupId) -> Self {
         Self {
             state: GuardState::Idle(id),
         }
@@ -372,13 +381,13 @@ impl UnsafeAllocationGroupToken {
 }
 
 pub(crate) struct AllocationGroupMetadata {
-    id: usize,
+    id: AllocationGroupId,
     tags: Option<GroupTags>,
 }
 
 impl AllocationGroupMetadata {
-    pub fn id(&self) -> usize {
-        self.id
+    pub fn id(&self) -> AllocationGroupId {
+        self.id.clone()
     }
 
     pub fn tags(&self) -> Option<GroupTags> {
@@ -391,13 +400,13 @@ impl AllocationGroupMetadata {
 pub(crate) fn get_active_allocation_group() -> Option<AllocationGroupMetadata> {
     // See if there's an active allocation token on this thread.
     CURRENT_ALLOCATION_TOKEN
-        .with(|current| *current.borrow())
+        .with(|current| current.borrow().clone())
         .and_then(|id| {
             // Try and grab the tags from the registry.  This shouldn't ever failed since we wrap
             // registry IDs in AllocationToken which only we can create.
             let registry = get_token_registry();
             registry.map(|registry| {
-                let tags = registry.get(id).copied().flatten();
+                let tags = registry.get(id.0).copied().flatten();
                 AllocationGroupMetadata { id, tags }
             })
         })

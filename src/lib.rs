@@ -52,7 +52,7 @@ mod tracing;
 mod util;
 
 pub use crate::allocator::Allocator;
-pub use crate::token::{AllocationGroupToken, AllocationGuard};
+pub use crate::token::{AllocationGroupId, AllocationGroupToken, AllocationGuard};
 #[cfg(feature = "tracing-compat")]
 pub use crate::tracing::AllocationLayer;
 
@@ -89,7 +89,7 @@ pub trait AllocationTracker {
         &self,
         addr: usize,
         size: usize,
-        group_id: usize,
+        group_id: AllocationGroupId,
         tags: Option<&'static [(&'static str, &'static str)]>,
     );
 
@@ -130,7 +130,7 @@ impl Tracker {
         &self,
         addr: usize,
         size: usize,
-        group_id: usize,
+        group_id: AllocationGroupId,
         tags: Option<&'static [(&'static str, &'static str)]>,
     ) {
         self.tracker.allocated(addr, size, group_id, tags)
