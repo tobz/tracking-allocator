@@ -256,18 +256,25 @@ impl GuardState {
     }
 
     fn transition_to_idle(&mut self) -> AllocationGroupId {
-        let (id, new_state) = match self {
-            Self::Idle(_) => panic!(
+        match self.try_transition_to_idle() {
+            None => panic!(
                 "tid {:?}: transitioning idle->idle is invalid",
                 std::thread::current().id()
             ),
+            Some(id) => id,
+        }
+    }
+
+    fn try_transition_to_idle(&mut self) -> Option<AllocationGroupId> {
+        let (id, new_state) = match self {
+            Self::Idle(_) => return None,
             Self::Active(previous) => {
                 // Reset the current allocation token to the previous one:
                 let current = CURRENT_ALLOCATION_TOKEN.with(|current| {
                     let old = mem::replace(&mut *current.borrow_mut(), previous.take());
                     old.expect("transitioned to idle state with empty CURRENT_ALLOCATION_TOKEN")
                 });
-                (current.clone(), Self::Idle(current))
+                (Some(current.clone()), Self::Idle(current))
             }
         };
         *self = new_state;
@@ -279,7 +286,8 @@ impl GuardState {
 /// ## Drop behavior
 ///
 /// This guard has a [`Drop`] implementation that resets the active allocation group back to the
-/// previous allocation group.
+/// previous allocation group.  Calling `exit` is generally preferred for being explicit about when
+/// the allocation group begins and ends, though.
 ///
 /// ## Moving across threads
 ///
@@ -316,10 +324,6 @@ impl AllocationGuard {
     /// Unmarks this allocation group as the active allocation group on this thread, resetting the
     /// active allocation group to the previous value.
     pub fn exit(mut self) -> AllocationGroupToken {
-        self.exit_inner()
-    }
-
-    fn exit_inner(&mut self) -> AllocationGroupToken {
         // Reset the current allocation token to the previous one.
         let current = self.state.transition_to_idle();
 
@@ -329,7 +333,7 @@ impl AllocationGuard {
 
 impl Drop for AllocationGuard {
     fn drop(&mut self) {
-        let _ = self.exit_inner();
+        let _ = self.state.try_transition_to_idle();
     }
 }
 
