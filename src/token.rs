@@ -106,8 +106,11 @@ where
         // We also reconstruct the old registry (via `Arc<TokenRegistry>`) so that we can drop it,
         // ensuring that the memory is cleaned up whenever the last reference to the old registry
         // goes out of scope, which may literally be this one.
-        let old_arc = unsafe { Arc::from_raw(old_addr as *const TokenRegistry) };
-        drop(old_arc);
+        let old_arc_ptr = old_addr as *const TokenRegistry;
+        if !old_arc_ptr.is_null() {
+            let old_arc = unsafe { Arc::from_raw(old_arc_ptr) };
+            drop(old_arc);
+        }
 
         // And release our ownership for modifying the token registry global pointer:
         TOKEN_REGISTRY_STATE.store(REGISTRY_STABLE, Ordering::SeqCst);
