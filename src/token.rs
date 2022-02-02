@@ -238,11 +238,12 @@ impl GuardState {
         let new_state = match self {
             Self::Idle(id) => {
                 // Set the current allocation token to the new token, keeping the previous.
-                let previous = CURRENT_ALLOCATION_TOKEN.with(|current| current.replace(Some(id.clone())));
+                let previous =
+                    CURRENT_ALLOCATION_TOKEN.with(|current| current.replace(Some(id.clone())));
                 Self::Active(previous)
             }
             Self::Active(ref previous) => {
-                let current = CURRENT_ALLOCATION_TOKEN.with(|current| *current.borrow());
+                let current = CURRENT_ALLOCATION_TOKEN.with(|current| current.borrow().clone());
                 panic!(
                     "tid {:?}: transitioning active->active is invalid; current={:?} previous={:?}",
                     std::thread::current().id(),

@@ -1,9 +1,5 @@
 use tracking_allocator::{
-    AllocationGroupId,
-    AllocationGroupToken,
-    AllocationRegistry,
-    AllocationTracker,
-    Allocator,
+    AllocationGroupId, AllocationGroupToken, AllocationRegistry, AllocationTracker, Allocator,
 };
 
 use std::{

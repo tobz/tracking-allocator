@@ -5,12 +5,8 @@ use tokio::{
 use tracing::{info_span, Instrument};
 use tracing_subscriber::{layer::SubscriberExt, Registry};
 use tracking_allocator::{
-    AllocationGroupId,
-    AllocationGroupToken,
-    AllocationLayer,
-    AllocationRegistry,
-    AllocationTracker,
-    Allocator,
+    AllocationGroupId, AllocationGroupToken, AllocationLayer, AllocationRegistry,
+    AllocationTracker, Allocator,
 };
 
 use std::{
