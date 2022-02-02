@@ -1,16 +1,25 @@
-use std::{borrow::Cow, cell::RefCell, mem, sync::Arc};
-
-use arc_swap::ArcSwapOption;
-use im::Vector;
+use std::{
+    borrow::Cow,
+    cell::RefCell,
+    mem,
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    },
+};
 
 use crate::util::PhantomNotSend;
 
 type GroupTags = &'static [(&'static str, &'static str)];
-type TokenRegistry = Vector<Option<GroupTags>>;
+type TokenRegistry = Vec<Option<GroupTags>>;
 
 // Holds the token registry, which maps allocation tokens to a set of static tags that describe who
 // or what the allocations tied to that token belong to.
-static TOKEN_REGISTRY: ArcSwapOption<TokenRegistry> = ArcSwapOption::const_empty();
+static TOKEN_REGISTRY: AtomicUsize = AtomicUsize::new(0);
+static TOKEN_REGISTRY_STATE: AtomicUsize = AtomicUsize::new(0);
+
+const REGISTRY_STABLE: usize = 0;
+const REGISTRY_MODIFYING: usize = 1;
 
 thread_local! {
     /// The currently executing allocation token.
@@ -18,6 +27,100 @@ thread_local! {
     /// Any allocations which occur on this thread will be associated with whichever token is
     /// present at the time of the allocation.
     static CURRENT_ALLOCATION_TOKEN: RefCell<Option<usize>> = RefCell::new(None);
+
+    // Whether or not a token registry update is in progress.
+    //
+    // We track this to avoid reentrancy problems with allocations during the update.
+    static TOKEN_REGISTRY_RCU_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+}
+
+fn get_token_registry() -> Option<Arc<TokenRegistry>> {
+    unsafe {
+        let addr = TOKEN_REGISTRY.load(Ordering::Acquire);
+        if addr == 0 {
+            None
+        } else {
+            // Reconstruct the `Arc<TokenRegistry>` behind this address, and clone it.  Crucially,
+            // we have to forget about the reconstructed `Arc<TokenRegistry>` because we don't want
+            // the drop destructor to run prematurely.
+            let inner = Arc::from_raw(addr as *const TokenRegistry);
+            let new = Arc::clone(&inner);
+            mem::forget(inner);
+            Some(new)
+        }
+    }
+}
+
+fn register_token<K, V>(tags: Option<&[(K, V)]>) -> usize
+where
+    K: Into<Cow<'static, str>> + Clone,
+    V: Into<Cow<'static, str>> + Clone,
+{
+    TOKEN_REGISTRY_RCU_IN_FLIGHT.with(|flag| {
+        flag.store(true, Ordering::Release);
+
+        let tags = tags.map(|tags| {
+            let tags = tags
+                .iter()
+                .map(|tag| {
+                    let (k, v) = tag;
+                    let sk = match k.clone().into() {
+                        Cow::Borrowed(rs) => rs,
+                        Cow::Owned(os) => Box::leak(os.into_boxed_str()),
+                    };
+
+                    let sv = match v.clone().into() {
+                        Cow::Borrowed(rs) => rs,
+                        Cow::Owned(os) => Box::leak(os.into_boxed_str()),
+                    };
+
+                    (sk, sv)
+                })
+                .collect::<Vec<_>>();
+            &*Box::leak(tags.into_boxed_slice())
+        });
+
+        // First, take ownership of modifying the token registry global pointer:
+        while TOKEN_REGISTRY_STATE
+            .compare_exchange_weak(
+                REGISTRY_STABLE,
+                REGISTRY_MODIFYING,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .is_err()
+        {}
+
+        // Now we can clone the existing registry and build the new token:
+        let mut new_registry = get_token_registry()
+            .map(|r| r.as_ref().clone())
+            .unwrap_or_default();
+
+        let id = new_registry.len();
+        new_registry.push(tags);
+
+        // Now we need to wrap the new registry up and store it:
+        let new_ptr = Arc::into_raw(Arc::new(new_registry));
+        let old_addr = TOKEN_REGISTRY.swap(new_ptr as usize, Ordering::SeqCst);
+
+        // We also reconstruct the old registry (via `Arc<TokenRegistry>`) so that we can drop it,
+        // ensuring that the memory is cleaned up whenever the last reference to the old registry
+        // goes out of scope, which may literally be this one.
+        let old_arc = unsafe { Arc::from_raw(old_addr as *const TokenRegistry) };
+        drop(old_arc);
+
+        // And release our ownership for modifying the token registry global pointer:
+        TOKEN_REGISTRY_STATE.store(REGISTRY_STABLE, Ordering::SeqCst);
+
+        flag.store(false, Ordering::Release);
+
+        id
+    })
+}
+
+#[inline]
+pub(crate) fn within_token_registry_rcu() -> bool {
+    TOKEN_REGISTRY_RCU_IN_FLIGHT.with(|flag| flag.load(Ordering::Acquire))
 }
 
 /// A token that uniquely identifies an allocation group.
@@ -47,18 +150,7 @@ pub struct AllocationGroupToken(usize);
 impl AllocationGroupToken {
     /// Acquires an allocation group token.
     pub fn acquire() -> AllocationGroupToken {
-        let mut id = 0;
-        TOKEN_REGISTRY.rcu(|registry| {
-            let mut registry = registry
-                .as_ref()
-                .map(|inner| inner.as_ref().clone())
-                .unwrap_or_default();
-
-            id = registry.len();
-            registry.push_back(None);
-            Some(Arc::new(registry))
-        });
-
+        let id = register_token::<String, String>(None);
         AllocationGroupToken(id)
     }
 
@@ -81,37 +173,7 @@ impl AllocationGroupToken {
         K: Into<Cow<'static, str>> + Clone,
         V: Into<Cow<'static, str>> + Clone,
     {
-        let tags = tags
-            .iter()
-            .map(|tag| {
-                let (k, v) = tag;
-                let sk = match k.clone().into() {
-                    Cow::Borrowed(rs) => rs,
-                    Cow::Owned(os) => Box::leak(os.into_boxed_str()),
-                };
-
-                let sv = match v.clone().into() {
-                    Cow::Borrowed(rs) => rs,
-                    Cow::Owned(os) => Box::leak(os.into_boxed_str()),
-                };
-
-                (sk, sv)
-            })
-            .collect::<Vec<_>>();
-        let tags = &*Box::leak(tags.into_boxed_slice());
-
-        let mut id = 0;
-        TOKEN_REGISTRY.rcu(|registry| {
-            let mut registry = registry
-                .as_ref()
-                .map(|inner| inner.as_ref().clone())
-                .unwrap_or_default();
-
-            id = registry.len();
-            registry.push_back(Some(tags));
-            Some(Arc::new(registry))
-        });
-
+        let id = register_token(Some(tags));
         AllocationGroupToken(id)
     }
 
@@ -163,28 +225,34 @@ enum GuardState {
 }
 
 impl GuardState {
-    fn idle(id: usize) -> Self {
-        Self::Idle(id)
-    }
-
     fn transition_to_active(&mut self) {
         let new_state = match self {
             Self::Idle(id) => {
                 // Set the current allocation token to the new token, keeping the previous.
                 let previous = CURRENT_ALLOCATION_TOKEN.with(|current| current.replace(Some(*id)));
-
                 Self::Active(previous)
             }
-            Self::Active(_) => panic!("transitioning active->active is invalid"),
+            Self::Active(ref previous) => {
+                let current = CURRENT_ALLOCATION_TOKEN.with(|current| *current.borrow());
+                panic!(
+                    "tid {:?}: transitioning active->active is invalid; current={:?} previous={:?}",
+                    std::thread::current().id(),
+                    current,
+                    previous
+                );
+            }
         };
         *self = new_state;
     }
 
     fn transition_to_idle(&mut self) -> usize {
         let (id, new_state) = match self {
-            Self::Idle(_) => panic!("transitioning idle->idle is invalid"),
+            Self::Idle(_) => panic!(
+                "tid {:?}: transitioning idle->idle is invalid",
+                std::thread::current().id()
+            ),
             Self::Active(previous) => {
-                // Reset the current allocation token to the previous one.
+                // Reset the current allocation token to the previous one:
                 let current = CURRENT_ALLOCATION_TOKEN.with(|current| {
                     let old = mem::replace(&mut *current.borrow_mut(), previous.take());
                     old.expect("transitioned to idle state with empty CURRENT_ALLOCATION_TOKEN")
@@ -226,7 +294,7 @@ pub struct AllocationGuard {
 
 impl AllocationGuard {
     pub(crate) fn enter(token: AllocationGroupToken) -> AllocationGuard {
-        let mut state = GuardState::idle(token.0);
+        let mut state = GuardState::Idle(token.0);
         state.transition_to_active();
 
         AllocationGuard {
@@ -258,6 +326,7 @@ impl Drop for AllocationGuard {
 /// Unmanaged allocation group token used specifically with `tracing`.
 ///
 /// ## Safety
+///
 /// While normally users would work directly with [`AllocationGroupToken`] and [`AllocationGuard`],
 /// we cannot store [`AllocationGuard`] in span data as it is `!Send`, and tracing spans can be sent
 /// across threads.
@@ -279,7 +348,7 @@ impl UnsafeAllocationGroupToken {
     /// Creates a new `UnsafeAllocationGroupToken`.
     pub fn new(id: usize) -> Self {
         Self {
-            state: GuardState::idle(id),
+            state: GuardState::Idle(id),
         }
     }
 
@@ -317,21 +386,19 @@ impl AllocationGroupMetadata {
     }
 }
 
-/// Gets the current allocation group, if one isactive, and any metadata associated with it.
+/// Gets the current allocation group, if one is active, and any metadata associated with it.
 #[inline(always)]
 pub(crate) fn get_active_allocation_group() -> Option<AllocationGroupMetadata> {
     // See if there's an active allocation token on this thread.
     CURRENT_ALLOCATION_TOKEN
         .with(|current| *current.borrow())
-        .map(|id| {
+        .and_then(|id| {
             // Try and grab the tags from the registry.  This shouldn't ever failed since we wrap
             // registry IDs in AllocationToken which only we can create.
-            let registry_guard = TOKEN_REGISTRY.load();
-            let registry = registry_guard
-                .as_ref()
-                .expect("allocation token cannot be set unless registry has been created");
-            let tags = registry.get(id).copied().flatten();
-
-            AllocationGroupMetadata { id, tags }
+            let registry = get_token_registry();
+            registry.map(|registry| {
+                let tags = registry.get(id).copied().flatten();
+                AllocationGroupMetadata { id, tags }
+            })
         })
 }

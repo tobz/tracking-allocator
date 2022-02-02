@@ -1,7 +1,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 
 use crate::get_global_tracker;
-use crate::token::get_active_allocation_group;
+use crate::token::{get_active_allocation_group, within_token_registry_rcu};
 
 /// Tracking allocator implementation.
 ///
@@ -39,9 +39,11 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Allocator<A> {
         let ptr = self.inner.alloc(layout);
         let addr = ptr as usize;
 
-        if let Some(tracker) = get_global_tracker() {
-            if let Some(group) = get_active_allocation_group() {
-                tracker.allocated(addr, size, group.id(), group.tags())
+        if !within_token_registry_rcu() {
+            if let Some(tracker) = get_global_tracker() {
+                if let Some(group) = get_active_allocation_group() {
+                    tracker.allocated(addr, size, group.id(), group.tags())
+                }
             }
         }
 
