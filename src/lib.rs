@@ -203,6 +203,7 @@ impl AllocationRegistry {
     /// Clears the global tracker.
     ///
     /// # Safety
+    ///
     /// Well, there is none.  It's not safe.  This method clears the static reference to the
     /// tracker, which means we're violating the central assumption that a reference with a
     /// `'static` lifetime is valid for the lifetime of the process.
