@@ -75,6 +75,7 @@ pub trait AllocationTracker {
     /// If any tags were associated with the allocation group, they will be provided.
     ///
     /// ## Correctness
+    ///
     /// Care should be taken to avoid allocating or deallocating in this method itself, as it could
     /// cause a recursive call that overflows the stack.  Likewise, care should be taken to avoid
     /// utilizing resources which depend on mutual exclusion i.e. locks which protect resources that
@@ -85,17 +86,12 @@ pub trait AllocationTracker {
     /// bounded channels, as well as intermediate structures that can be allocated entirely on the
     /// stack.  This will ensure that no allocations are required in this method, while still
     /// allowing code to be written that isn't unnecessarily restrictive.
-    fn allocated(
-        &self,
-        addr: usize,
-        size: usize,
-        group_id: AllocationGroupId,
-        tags: Option<&'static [(&'static str, &'static str)]>,
-    );
+    fn allocated(&self, addr: usize, size: usize, group_id: AllocationGroupId);
 
     /// Tracks when a deallocation has occurred.
     ///
     /// ## Correctness
+    ///
     /// Care should be taken to avoid allocating or deallocating in this method itself, as it could
     /// cause a recursive call that overflows the stack.  Likewise, care should be taken to avoid
     /// utilizing resources which depend on mutual exclusion i.e. locks which protect resources that
@@ -106,7 +102,7 @@ pub trait AllocationTracker {
     /// bounded channels, as well as intermediate structures that can be allocated entirely on the
     /// stack.  This will ensure that no allocations are required in this method, while still
     /// allowing code to be written that isn't unnecessarily restrictive.
-    fn deallocated(&self, addr: usize);
+    fn deallocated(&self, addr: usize, current_group_id: AllocationGroupId);
 }
 
 struct Tracker {
@@ -124,21 +120,13 @@ impl Tracker {
     }
 
     /// Tracks when an allocation has occurred.
-    ///
-    /// If there was an active allocation group,
-    fn allocated(
-        &self,
-        addr: usize,
-        size: usize,
-        group_id: AllocationGroupId,
-        tags: Option<&'static [(&'static str, &'static str)]>,
-    ) {
-        self.tracker.allocated(addr, size, group_id, tags)
+    fn allocated(&self, addr: usize, size: usize, group_id: AllocationGroupId) {
+        self.tracker.allocated(addr, size, group_id)
     }
 
     /// Tracks when a deallocation has occurred.
-    fn deallocated(&self, addr: usize) {
-        self.tracker.deallocated(addr)
+    fn deallocated(&self, addr: usize, group_id: AllocationGroupId) {
+        self.tracker.deallocated(addr, group_id)
     }
 }
 

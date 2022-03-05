@@ -24,10 +24,10 @@ enum AllocationEvent {
         addr: usize,
         size: usize,
         group_id: AllocationGroupId,
-        tags: Option<&'static [(&'static str, &'static str)]>,
     },
     Deallocated {
         addr: usize,
+        current_group_id: AllocationGroupId,
     },
 }
 
@@ -50,29 +50,25 @@ struct ChannelBackedTracker {
 // `AllocationTracker` in order to actually handle allocation events.  The interface is
 // straightforward: you're notified when an allocation occurs, and when a deallocation occurs.
 impl AllocationTracker for ChannelBackedTracker {
-    fn allocated(
-        &self,
-        addr: usize,
-        size: usize,
-        group_id: AllocationGroupId,
-        tags: Option<&'static [(&'static str, &'static str)]>,
-    ) {
+    fn allocated(&self, addr: usize, size: usize, group_id: AllocationGroupId) {
         // Allocations have all the pertinent information upfront, which you must store if you want
         // to do any correlation with deallocations.
         let _ = self.sender.send(AllocationEvent::Allocated {
             addr,
             size,
             group_id,
-            tags,
         });
     }
 
-    fn deallocated(&self, addr: usize) {
+    fn deallocated(&self, addr: usize, current_group_id: AllocationGroupId) {
         // As `tracking_allocator` itself strives to add as little overhead as possible, we only
         // forward the address being deallocated.  Your tracker implementation will need to handle
         // mapping the allocation address back to allocation group if you need to know the total
         // in-use memory, vs simply knowing how many or when allocations are occurring.
-        let _ = self.sender.send(AllocationEvent::Deallocated { addr });
+        let _ = self.sender.send(AllocationEvent::Deallocated {
+            addr,
+            current_group_id,
+        });
     }
 }
 
@@ -91,12 +87,6 @@ fn main() {
     let _ = AllocationRegistry::set_global_tracker(ChannelBackedTracker::from(tx))
         .expect("no other global tracker should be set yet");
 
-    // Create a global allocation group.  We'll talk more about allocation groups, and what they're
-    // used for, a little further down.
-    let global_token = AllocationGroupToken::acquire();
-    let _global_guard = global_token.enter();
-
-    // Even with the tracker set, we're still not tracking allocations yet.  We need to enable tracking explicitly.
     AllocationRegistry::enable_tracking();
 
     // Register an allocation group.  Allocation groups are what allocations are associated with,
@@ -107,7 +97,8 @@ fn main() {
     //
     // Callers can attach tags to their group by calling `AllocationRegistry::register_with_tags`
     // instead, but we're going to register our group without any tags for now.
-    let local_token = AllocationGroupToken::acquire();
+    let local_token =
+        AllocationGroupToken::register().expect("failed to register allocation group");
 
     // Now, get an allocation guard from our token.  This guard ensures the allocation group is
     // marked as the current allocation group, so that our allocations are properly associated.
@@ -118,25 +109,26 @@ fn main() {
     let mut v = Vec::new();
     v.push(s);
 
-    // Drop the vector to generate some deallocations.
-    drop(v);
-
     // Drop our "local" group guard.  You can also call `exit` on `AllocationGuard` to transform it
     // back to an `AllocationToken` for further reuse.  Exiting/dropping the guard will update the
     // thread state so that any allocations afterwards are once again attributed to the "global"
     // allocation group.
     drop(local_guard);
 
+    // Drop the vector to generate some deallocations.
+    drop(v);
+
     // Disable tracking and read the allocation events from our receiver.
     AllocationRegistry::disable_tracking();
 
-    // We should end up seeing six events here: an allocation and deallocation related to
-    // registering our local allocation group, two allocations for the `String` and the `Vec`
+    // We should end up seeing four events here: two allocations for the `String` and the `Vec`
     // associated with the local allocation group, and two deallocations when we drop the `Vec`.
     //
-    // The allocation/deallocation from registering the local allocation group will be attributed to
-    // group ID #0, aka our "global" allocation group, while the two allocations for our `String`
-    // and `Vec` will be associated with group ID #1, aka our "local" allocation group.
+    // The two allocations should be attributed to our local allocation group
+    // (group ID #1) while the deallocations will be attributed to the global allocation group.
+    // This simply means they were deallocated within the global allocation group (aka not actually
+    // within a registered allocation group) but you would still need to track addresses to group
+    // IDs on your own to know who "owns" an allocation.
     let mut events = rx.try_iter();
     while let Some(event) = events.next() {
         match event {
@@ -144,15 +136,20 @@ fn main() {
                 addr,
                 size,
                 group_id,
-                tags,
             } => {
                 println!(
-                    "allocation -> addr={:#x} size={} group_id={:?} tags={:?}",
-                    addr, size, group_id, tags
+                    "allocation -> addr={:#x} size={} group_id={:?}",
+                    addr, size, group_id
                 );
             }
-            AllocationEvent::Deallocated { addr } => {
-                println!("deallocation -> addr={:#x}", addr);
+            AllocationEvent::Deallocated {
+                addr,
+                current_group_id,
+            } => {
+                println!(
+                    "deallocation -> addr={:#x} current_group_id={:?}",
+                    addr, current_group_id
+                );
             }
         }
     }

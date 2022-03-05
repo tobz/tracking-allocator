@@ -13,16 +13,9 @@ static ALLOCATOR: Allocator<System> = Allocator::system();
 struct NoopTracker;
 
 impl AllocationTracker for NoopTracker {
-    fn allocated(
-        &self,
-        _addr: usize,
-        _size: usize,
-        _group_id: AllocationGroupId,
-        _tags: Option<&'static [(&'static str, &'static str)]>,
-    ) {
-    }
+    fn allocated(&self, _addr: usize, _size: usize, _group_id: AllocationGroupId) {}
 
-    fn deallocated(&self, _addr: usize) {}
+    fn deallocated(&self, _addr: usize, _current_group_id: AllocationGroupId) {}
 }
 
 fn criterion_benchmark(c: &mut Criterion) {

@@ -37,10 +37,10 @@ enum AllocationEvent {
         addr: usize,
         size: usize,
         group_id: AllocationGroupId,
-        tags: Option<&'static [(&'static str, &'static str)]>,
     },
     Deallocated {
         addr: usize,
+        group_id: AllocationGroupId,
     },
 }
 
@@ -63,29 +63,24 @@ struct ChannelBackedTracker {
 // `AllocationTracker` in order to actually handle allocation events.  The interface is
 // straightforward: you're notified when an allocation occurs, and when a deallocation occurs.
 impl AllocationTracker for ChannelBackedTracker {
-    fn allocated(
-        &self,
-        addr: usize,
-        size: usize,
-        group_id: AllocationGroupId,
-        tags: Option<&'static [(&'static str, &'static str)]>,
-    ) {
+    fn allocated(&self, addr: usize, size: usize, group_id: AllocationGroupId) {
         // Allocations have all the pertinent information upfront, which you must store if you want
         // to do any correlation with deallocations.
         let _ = self.sender.send(AllocationEvent::Allocated {
             addr,
             size,
             group_id,
-            tags,
         });
     }
 
-    fn deallocated(&self, addr: usize) {
+    fn deallocated(&self, addr: usize, group_id: AllocationGroupId) {
         // As `tracking_allocator` itself strives to add as little overhead as possible, we only
         // forward the address being deallocated.  Your tracker implementation will need to handle
         // mapping the allocation address back to allocation group if you need to know the total
         // in-use memory, vs simply knowing how many or when allocations are occurring.
-        let _ = self.sender.send(AllocationEvent::Deallocated { addr });
+        let _ = self
+            .sender
+            .send(AllocationEvent::Deallocated { addr, group_id });
     }
 }
 
@@ -97,19 +92,12 @@ impl From<SyncSender<AllocationEvent>> for ChannelBackedTracker {
 
 fn main() {
     // Create our channels for receiving the allocation events.
-    let (tx, rx) = sync_channel(32);
+    let (tx, rx) = sync_channel(256);
     let (done, should_exit) = create_arc_pair(AtomicBool::new(false));
     let (is_flushed, mark_flushed) = create_arc_pair(StdBarrier::new(2));
 
-    // We spawn off our processing thread so the channels don't back up as we're exeucting.
+    // We spawn off our processing thread so the channels don't back up as we're executing.
     let _ = thread::spawn(move || {
-        // We should end up seeing six events here: an allocation and deallocation related to
-        // registering our local allocation group, two allocations for the `String` and the `Vec`
-        // associated with the local allocation group, and two deallocations when we drop the `Vec`.
-        //
-        // The allocation/deallocation from registering the local allocation group will be attributed to
-        // group ID #0, aka our "global" allocation group, while the two allocations for our `String`
-        // and `Vec` will be associated with group ID #1, aka our "local" allocation group.
         loop {
             // We're only using a timeout here so that we ensure that we're checking to see if we
             // should actually finish up and exit.
@@ -119,15 +107,14 @@ fn main() {
                         addr,
                         size,
                         group_id,
-                        tags,
                     } => {
                         println!(
-                            "allocation -> addr={:#x} size={} group_id={:?} tags={:?}",
-                            addr, size, group_id, tags
+                            "allocation -> addr={:#x} size={} group_id={:?}",
+                            addr, size, group_id
                         );
                     }
-                    AllocationEvent::Deallocated { addr } => {
-                        println!("deallocation -> addr={:#x}", addr);
+                    AllocationEvent::Deallocated { addr, group_id } => {
+                        println!("deallocation -> addr={:#x} group_id={:?}", addr, group_id);
                     }
                 }
             } else {
@@ -164,16 +151,17 @@ fn main() {
     let _ = AllocationRegistry::set_global_tracker(ChannelBackedTracker::from(tx))
         .expect("no other global tracker should be set yet");
 
-    // Acquire two allocation groups.  Allocation groups are what allocations are associated with,
-    // and allocations are only tracked if an allocation group is "active".  This gives us a way to
-    // actually have another task or thread processing the allocation events -- which may require
-    // allocating storage to do so -- without ending up in a weird re-entrant situation if we just
-    // instrumented all allocations throughout the process.
+    // Register two allocation groups.  Allocation groups are what allocations are associated with.
+    // and if there is no user-register allocation group active during an allocation, the "root"
+    // allocation group is used.  This matches the value returned by `AllocationGroupId::root()`.
     //
-    // Callers can attach tags to their group by calling `AllocationRegistry::acquire_with_tags`
-    // instead, which is what we're going to do in order to provide some more useful metadata.
-    let task1_token = AllocationGroupToken::acquire_with_tags(&[("task_id", "1")]);
-    let task2_token = AllocationGroupToken::acquire_with_tags(&[("task_id", "2")]);
+    // This gives us a way to actually have another task or thread processing the allocation events
+    // -- which may require allocating storage to do so -- without ending up in a weird re-entrant
+    // situation if we just instrumented all allocations throughout the process.
+    let task1_token =
+        AllocationGroupToken::register().expect("failed to register allocation group");
+    let task2_token =
+        AllocationGroupToken::register().expect("failed to register allocation group");
 
     // Even with the tracker set, we're still not tracking allocations yet.  We need to enable tracking explicitly.
     AllocationRegistry::enable_tracking();
