@@ -1,7 +1,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 
 use crate::get_global_tracker;
-use crate::token::get_active_allocation_group_id;
+use crate::token::with_suspended_allocation_group_id;
 
 /// Tracking allocator implementation.
 ///
@@ -39,17 +39,13 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Allocator<A> {
         let ptr = self.inner.alloc(layout);
         let addr = ptr as usize;
 
-        // TODO: Should we have a thread-local that stops reentrant tracking of allocations?  This
-        // would make it much, much easier to actually accomplish the storage of allocation data for
-        // tallying and analysis since we need data structures that grow over time, and might
-        // register new allocation groups over time as well, requiring resizing and so on.
-        //
-        // Biggest downside is that it's potentially another chunk of overhead that each call must
-        // endure as we set and unset the "don't track reentrant-ly" flag.  We should do it and
-        // benchmark, though.
         if let Some(tracker) = get_global_tracker() {
-            let group_id = get_active_allocation_group_id();
-            tracker.allocated(addr, size, group_id);
+            with_suspended_allocation_group_id(
+                #[inline(always)]
+                |group_id| {
+                    tracker.allocated(addr, size, group_id);
+                },
+            );
         }
 
         ptr
@@ -61,8 +57,12 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Allocator<A> {
         self.inner.dealloc(ptr, layout);
 
         if let Some(tracker) = get_global_tracker() {
-            let group_id = get_active_allocation_group_id();
-            tracker.deallocated(addr, group_id);
+            with_suspended_allocation_group_id(
+                #[inline(always)]
+                |group_id| {
+                    tracker.deallocated(addr, group_id);
+                },
+            );
         }
     }
 }

@@ -284,10 +284,22 @@ impl UnsafeAllocationGroupToken {
     }
 }
 
-/// Gets the current allocation group ID, if one is active.
+/// Calls `f` with the current allocation token, without tracking allocations in `f`.
 #[inline(always)]
-pub(crate) fn get_active_allocation_group_id() -> AllocationGroupId {
-    CURRENT_ALLOCATION_TOKEN
-        .with(|current| current.borrow().clone())
-        .unwrap_or_else(AllocationGroupId::root)
+pub(crate) fn with_suspended_allocation_group_id<F>(mut f: F)
+where
+    F: FnMut(AllocationGroupId),
+{
+    let _ = CURRENT_ALLOCATION_TOKEN.try_with(
+        #[inline(always)]
+        |current| {
+            if let Ok(mut token) = current.try_borrow_mut() {
+                if let Some(group_id) = token.take() {
+                    *token = None;
+                    f(group_id.clone());
+                    *token = Some(group_id);
+                }
+            }
+        },
+    );
 }
