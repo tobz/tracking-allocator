@@ -31,7 +31,7 @@ required-features = ["tracing-compat"]
 
 [features]
 default = ["tracing-compat"]
-tracing-compat = ["tracing", "tracing-subscriber"]
+tracing-compat = ["tracing", "tracing-subscriber", "tracing-subscriber/std"]
 
 [dependencies] 
 tracing = { version = "0.1", default-features = false,  optional = true }
