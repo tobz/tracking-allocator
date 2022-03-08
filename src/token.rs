@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
     mem,
+    num::NonZeroUsize,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -11,31 +12,36 @@ thread_local! {
     ///
     /// Any allocations which occur on this thread will be associated with whichever token is
     /// present at the time of the allocation.
-    static CURRENT_ALLOCATION_TOKEN: RefCell<Option<AllocationGroupId>> = RefCell::new(None);
+    pub (crate) static CURRENT_ALLOCATION_TOKEN: RefCell<AllocationGroupId> =
+        RefCell::new(AllocationGroupId::ROOT);
 }
-
-static GROUP_ID: AtomicUsize = AtomicUsize::new(1);
-static HIGHEST_GROUP_ID: AtomicUsize = AtomicUsize::new(1);
 
 /// The identifier that uniquely identifiers an allocation group.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct AllocationGroupId(usize);
+pub struct AllocationGroupId(NonZeroUsize);
 
 impl AllocationGroupId {
-    /// Gets the group ID used for allocations which are not made within a registered allocation group.
-    pub const fn root() -> AllocationGroupId {
-        AllocationGroupId(0)
+    /// The group ID used for allocations which are not made within a registered allocation group.
+    pub const ROOT: Self = Self(unsafe { NonZeroUsize::new_unchecked(1) });
+
+    const fn as_usize(&self) -> usize {
+        Self::ROOT.0.get()
     }
-}
 
-fn register_group_id() -> Option<AllocationGroupId> {
-    let group_id = GROUP_ID.fetch_add(1, Ordering::Relaxed);
-    let highest_group_id = HIGHEST_GROUP_ID.fetch_max(group_id, Ordering::AcqRel);
+    fn register() -> Option<AllocationGroupId> {
+        static GROUP_ID: AtomicUsize = AtomicUsize::new(AllocationGroupId::ROOT.as_usize() + 1);
+        static HIGHEST_GROUP_ID: AtomicUsize =
+            AtomicUsize::new(AllocationGroupId::ROOT.as_usize() + 1);
 
-    if group_id >= highest_group_id {
-        Some(AllocationGroupId(group_id))
-    } else {
-        None
+        let group_id = GROUP_ID.fetch_add(1, Ordering::Relaxed);
+        let highest_group_id = HIGHEST_GROUP_ID.fetch_max(group_id, Ordering::AcqRel);
+
+        if group_id >= highest_group_id {
+            let group_id = NonZeroUsize::new(group_id).expect("bug: GROUP_ID overflowed");
+            Some(AllocationGroupId(group_id))
+        } else {
+            None
+        }
     }
 }
 
@@ -76,7 +82,7 @@ impl AllocationGroupToken {
     ///
     /// Otherwise, `Some(token)` is returned.
     pub fn register() -> Option<AllocationGroupToken> {
-        register_group_id().map(AllocationGroupToken)
+        AllocationGroupId::register().map(AllocationGroupToken)
     }
 
     /// The ID associated with this allocation group.
@@ -129,7 +135,7 @@ enum GuardState {
     // Guard is active.  We're the active allocation group, so we hold on to the previous
     // allocation group ID, if there was one, so we can switch back to it when we transition to
     // being idle.
-    Active(Option<AllocationGroupId>),
+    Active(AllocationGroupId),
 }
 
 impl GuardState {
@@ -137,8 +143,7 @@ impl GuardState {
         let new_state = match self {
             Self::Idle(id) => {
                 // Set the current allocation token to the new token, keeping the previous.
-                let previous =
-                    CURRENT_ALLOCATION_TOKEN.with(|current| current.replace(Some(id.clone())));
+                let previous = CURRENT_ALLOCATION_TOKEN.with(|current| current.replace(id.clone()));
                 Self::Active(previous)
             }
             Self::Active(ref previous) => {
@@ -169,10 +174,8 @@ impl GuardState {
             Self::Idle(_) => return None,
             Self::Active(previous) => {
                 // Reset the current allocation token to the previous one:
-                let current = CURRENT_ALLOCATION_TOKEN.with(|current| {
-                    let old = mem::replace(&mut *current.borrow_mut(), previous.take());
-                    old.expect("transitioned to idle state with empty CURRENT_ALLOCATION_TOKEN")
-                });
+                let current = CURRENT_ALLOCATION_TOKEN
+                    .with(|current| mem::replace(&mut *current.borrow_mut(), previous.clone()));
                 (Some(current.clone()), Self::Idle(current))
             }
         };
@@ -293,12 +296,8 @@ where
     let _ = CURRENT_ALLOCATION_TOKEN.try_with(
         #[inline(always)]
         |current| {
-            if let Ok(mut token) = current.try_borrow_mut() {
-                if let Some(group_id) = token.take() {
-                    *token = None;
-                    f(group_id.clone());
-                    *token = Some(group_id);
-                }
+            if let Ok(group_id) = current.try_borrow_mut() {
+                f(group_id.clone());
             }
         },
     );

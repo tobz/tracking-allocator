@@ -1,4 +1,4 @@
-//! The `allocated` and `deallocated` methods of the `AllocationTracker` used in this test, 
+//! The `allocated` and `deallocated` methods of the `AllocationTracker` used in this test,
 //! themselves, allocate. This test ensures that these allocations do not lead to infinite
 //! recursion.
 
