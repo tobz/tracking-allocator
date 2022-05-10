@@ -21,17 +21,27 @@ thread_local! {
 pub struct AllocationGroupId(NonZeroUsize);
 
 impl AllocationGroupId {
+    /// Attempts to create an `AllocationGroupId` from a raw `usize`.
+    ///
+    /// If the raw value is zero, `None` is returned.
+    pub(crate) fn from_raw(id: usize) -> Option<Self> {
+        NonZeroUsize::new(id).map(Self)
+    }
+}
+
+impl AllocationGroupId {
     /// The group ID used for allocations which are not made within a registered allocation group.
     pub const ROOT: Self = Self(unsafe { NonZeroUsize::new_unchecked(1) });
 
-    const fn as_usize(&self) -> usize {
-        Self::ROOT.0.get()
+    /// Gets the integer representation of this group ID.
+    pub(crate) const fn as_usize(&self) -> NonZeroUsize {
+        self.0
     }
 
     fn register() -> Option<AllocationGroupId> {
-        static GROUP_ID: AtomicUsize = AtomicUsize::new(AllocationGroupId::ROOT.as_usize() + 1);
+        static GROUP_ID: AtomicUsize = AtomicUsize::new(AllocationGroupId::ROOT.0.get() + 1);
         static HIGHEST_GROUP_ID: AtomicUsize =
-            AtomicUsize::new(AllocationGroupId::ROOT.as_usize() + 1);
+            AtomicUsize::new(AllocationGroupId::ROOT.0.get() + 1);
 
         let group_id = GROUP_ID.fetch_add(1, Ordering::Relaxed);
         let highest_group_id = HIGHEST_GROUP_ID.fetch_max(group_id, Ordering::AcqRel);
@@ -289,15 +299,18 @@ impl UnsafeAllocationGroupToken {
 
 /// Calls `f` with the current allocation token, without tracking allocations in `f`.
 #[inline(always)]
-pub(crate) fn with_suspended_allocation_group_id<F>(mut f: F)
+pub(crate) fn with_suspended_allocation_group_id<F>(f: F)
 where
-    F: FnMut(AllocationGroupId),
+    F: FnOnce(AllocationGroupId),
 {
-    let _ = CURRENT_ALLOCATION_TOKEN.try_with(
+    CURRENT_ALLOCATION_TOKEN.with(
         #[inline(always)]
         |current| {
+            // The crux of avoiding reentrancy is `RefCell:try_borrow_mut`, which allows callers to skip trying to run
+            // `f` if they cannot mutably borrow the current allocation group ID. As `try_borrow_mut` will only let one
+            // mutable borrow happen at a time, the tracker logic is never reentrant.
             if let Ok(group_id) = current.try_borrow_mut() {
-                f(group_id.clone());
+                f(AllocationGroupId(group_id.0));
             }
         },
     );

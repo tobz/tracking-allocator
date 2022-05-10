@@ -24,7 +24,13 @@ impl AllocationTracker for AllocatingTracker {
         let _ = Box::new([0u64; 64]);
     }
 
-    fn deallocated(&self, _addr: usize, _current_group_id: AllocationGroupId) {
+    fn deallocated(
+        &self,
+        _addr: usize,
+        _size: usize,
+        _source_group_id: AllocationGroupId,
+        _current_group_id: AllocationGroupId,
+    ) {
         DEALLOCATIONS.fetch_add(1, Ordering::SeqCst);
         let _ = Box::new([0u64; 64]);
     }

@@ -51,6 +51,8 @@ mod token;
 mod tracing;
 mod util;
 
+use token::with_suspended_allocation_group_id;
+
 pub use crate::allocator::Allocator;
 pub use crate::token::{AllocationGroupId, AllocationGroupToken, AllocationGuard};
 #[cfg(feature = "tracing-compat")]
@@ -72,37 +74,29 @@ const INITIALIZED: usize = 2;
 pub trait AllocationTracker {
     /// Tracks when an allocation has occurred.
     ///
-    /// If any tags were associated with the allocation group, they will be provided.
-    ///
-    /// ## Correctness
-    ///
-    /// Care should be taken to avoid allocating or deallocating in this method itself, as it could
-    /// cause a recursive call that overflows the stack.  Likewise, care should be taken to avoid
-    /// utilizing resources which depend on mutual exclusion i.e. locks which protect resources that
-    /// may allocate, as this can potentially lead to deadlocking if not capable of reentrant
-    /// locking
-    ///
-    /// Implementors should prefer data structures that can pre-allocate their memory, such as
-    /// bounded channels, as well as intermediate structures that can be allocated entirely on the
-    /// stack.  This will ensure that no allocations are required in this method, while still
-    /// allowing code to be written that isn't unnecessarily restrictive.
+    /// All allocations/deallocations that occur within the call to `AllocationTracker::allocated` are ignored, so
+    /// implementors can allocate/deallocate without risk of reentrancy bugs. It does mean, however, that the
+    /// allocations/deallocations that occur will be effectively lost, so implementors should ensure that the only data
+    /// they deallocate in the tracker is data that was similarly allocated, and vise versa.
     fn allocated(&self, addr: usize, size: usize, group_id: AllocationGroupId);
 
     /// Tracks when a deallocation has occurred.
     ///
-    /// ## Correctness
+    /// `source_group_id` contains the group ID where the given allocation originated from, while `current_group_id` is
+    /// the current group ID, and as such, these values may differ depending on how values have had their ownership
+    /// transferred.
     ///
-    /// Care should be taken to avoid allocating or deallocating in this method itself, as it could
-    /// cause a recursive call that overflows the stack.  Likewise, care should be taken to avoid
-    /// utilizing resources which depend on mutual exclusion i.e. locks which protect resources that
-    /// may allocate, as this can potentially lead to deadlocking if not capable of reentrant
-    /// locking
-    ///
-    /// Implementors should prefer data structures that can pre-allocate their memory, such as
-    /// bounded channels, as well as intermediate structures that can be allocated entirely on the
-    /// stack.  This will ensure that no allocations are required in this method, while still
-    /// allowing code to be written that isn't unnecessarily restrictive.
-    fn deallocated(&self, addr: usize, current_group_id: AllocationGroupId);
+    /// All allocations/deallocations that occur within the call to `AllocationTracker::deallocated` are ignored, so
+    /// implementors can allocate/deallocate without risk of reentrancy bugs. It does mean, however, that the
+    /// allocations/deallocations that occur will be effectively lost, so implementors should ensure that the only data
+    /// they deallocate in the tracker is data that was similarly allocated, and vise versa.
+    fn deallocated(
+        &self,
+        addr: usize,
+        size: usize,
+        source_group_id: AllocationGroupId,
+        current_group_id: AllocationGroupId,
+    );
 }
 
 struct Tracker {
@@ -125,8 +119,15 @@ impl Tracker {
     }
 
     /// Tracks when a deallocation has occurred.
-    fn deallocated(&self, addr: usize, group_id: AllocationGroupId) {
-        self.tracker.deallocated(addr, group_id)
+    fn deallocated(
+        &self,
+        addr: usize,
+        size: usize,
+        source_group_id: AllocationGroupId,
+        current_group_id: AllocationGroupId,
+    ) {
+        self.tracker
+            .deallocated(addr, size, source_group_id, current_group_id)
     }
 }
 
@@ -186,6 +187,18 @@ impl AllocationRegistry {
         } else {
             Err(SetTrackerError { _sealed: () })
         }
+    }
+
+    /// Runs the given closure without tracking allocations or deallocations.
+    ///
+    /// Inevitably, users of this crate will need to allocate storage for the actual data being tracked. While
+    /// `AllocationTracker::allocated` and `AllocationTracker::deallocated` already avoid reentrantly tracking
+    /// allocations, this method provides a way to do so outside of the tracker implementation.
+    pub fn untracked<F>(f: F)
+    where
+        F: FnOnce(),
+    {
+        with_suspended_allocation_group_id(move |_| f());
     }
 
     /// Clears the global tracker.

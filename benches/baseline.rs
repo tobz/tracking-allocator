@@ -4,7 +4,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 
 fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("system allocation", |b| {
-        // This simply measures the overhead of using trhe system allocator normally.
+        // This simply measures the overhead of using the system allocator normally.
         b.iter(|| Vec::<String>::with_capacity(128));
     });
 }
