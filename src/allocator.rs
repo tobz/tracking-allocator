@@ -1,6 +1,6 @@
 use std::alloc::{handle_alloc_error, GlobalAlloc, Layout, System};
 
-use crate::token::with_suspended_allocation_group_id;
+use crate::token::try_with_suspended_allocation_group;
 use crate::{get_global_tracker, AllocationGroupId};
 
 /// Tracking allocator implementation.
@@ -61,7 +61,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Allocator<A> {
         let object_addr = object_ptr as usize;
 
         if let Some(tracker) = get_global_tracker() {
-            with_suspended_allocation_group_id(
+            try_with_suspended_allocation_group(
                 #[inline(always)]
                 |group_id| {
                     // We only set the group ID in the wrapper header if we're tracking an allocation, because when it
@@ -101,7 +101,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Allocator<A> {
 
         if let Some(tracker) = get_global_tracker() {
             if let Some(source_group_id) = AllocationGroupId::from_raw(raw_group_id) {
-                with_suspended_allocation_group_id(
+                try_with_suspended_allocation_group(
                     #[inline(always)]
                     |current_group_id| {
                         tracker.deallocated(

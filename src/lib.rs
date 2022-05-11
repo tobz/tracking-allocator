@@ -1,9 +1,8 @@
 //! # tracking-allocator
 //!
-//! This crate provides a global allocator implementation (compatible with [`GlobalAlloc`][global_alloc]) that
-//! allows users to trace allocations and deallocations directly.  Allocation tokens can also be
-//! registered, which allows users to get an identifier that has associated metadata, which when
-//! used, can enhance the overall tracking of allocations.
+//! This crate provides a global allocator implementation (compatible with [`GlobalAlloc`][global_alloc]) that allows
+//! users to trace allocations and deallocations directly.  Allocation tokens can also be registered, which allows users
+//! to get an identifier that has associated metadata, which when used, can enhance the overall tracking of allocations.
 //!
 //! ## high-level usage
 //!
@@ -12,25 +11,23 @@
 //! - the [`AllocationTracker`] trait, which defines an interface for receiving allocation and deallocation events
 //! - [`AllocationGroupToken`] which is used to associate allocation events with a logical group
 //!
-//! These components all work in tandem together.  Once the allocator is installed, an appropriate
-//! tracker implementation can also be installed to handle the allocation and deallocation events as
-//! desired, whether you're simply tracking the frequency of allocations, or trying to track the
-//! real-time usage of different allocation groups.  Allocation groups can be created on-demand, and
-//! with optional string key/values for metadata.
+//! These components all work in tandem together.  Once the allocator is installed, an appropriate tracker
+//! implementation can also be installed to handle the allocation and deallocation events as desired, whether you're
+//! simply tracking the frequency of allocations, or trying to track the real-time usage of different allocation groups.
+//! Allocation groups can be created on-demand, as well, which makes them suitable to tracking additional logical groups
+//! over the lifetime of the process.
 //!
-//! Additionally, tracking can be enabled and disabled at runtime, allowing you to make the choice
-//! of when to incur the performance overhead of tracking.
+//! Additionally, tracking can be enabled and disabled at runtime, allowing you to make the choice of when to incur the
+//! performance overhead of tracking.
 //!
 //! ## examples
 //!
-//! Two main examples are provided: `stdout` and `tracing`.  Both examples demonstrate how to
-//! effectively to use the crate, but the `tracing` example is specific to using the
-//! `tracing-compat` feature.
+//! Two main examples are provided: `stdout` and `tracing`.  Both examples demonstrate how to effectively to use the
+//! crate, but the `tracing` example is specific to using the `tracing-compat` feature.
 //!
-//! The examples are considered the primary documentation for the "how" of using this crate
-//! effectively.  They are extensively documented, and touch on the finer points of writing a
-//! tracker implementation, including how to avoid specific pitfalls related to deadlocking and
-//! reentrant code that could lead to stack overflows.
+//! The examples are considered the primary documentation for the "how" of using this crate effectively.  They are
+//! extensively documented, and touch on the finer points of writing a tracker implementation, including how to avoid
+//! specific pitfalls related to deadlocking and reentrant code that could lead to stack overflows.
 //!
 //! [global_alloc]: std::alloc::GlobalAlloc
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -51,7 +48,7 @@ mod token;
 mod tracing;
 mod util;
 
-use token::with_suspended_allocation_group_id;
+use token::with_suspended_allocation_group;
 
 pub use crate::allocator::Allocator;
 pub use crate::token::{AllocationGroupId, AllocationGroupToken, AllocationGuard};
@@ -194,11 +191,11 @@ impl AllocationRegistry {
     /// Inevitably, users of this crate will need to allocate storage for the actual data being tracked. While
     /// `AllocationTracker::allocated` and `AllocationTracker::deallocated` already avoid reentrantly tracking
     /// allocations, this method provides a way to do so outside of the tracker implementation.
-    pub fn untracked<F>(f: F)
+    pub fn untracked<F, R>(f: F) -> R
     where
-        F: FnOnce(),
+        F: FnOnce() -> R,
     {
-        with_suspended_allocation_group_id(move |_| f());
+        with_suspended_allocation_group(f)
     }
 
     /// Clears the global tracker.

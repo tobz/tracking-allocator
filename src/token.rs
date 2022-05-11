@@ -34,7 +34,7 @@ impl AllocationGroupId {
     pub const ROOT: Self = Self(unsafe { NonZeroUsize::new_unchecked(1) });
 
     /// Gets the integer representation of this group ID.
-    pub(crate) const fn as_usize(&self) -> NonZeroUsize {
+    pub const fn as_usize(&self) -> NonZeroUsize {
         self.0
     }
 
@@ -55,47 +55,39 @@ impl AllocationGroupId {
     }
 }
 
-/// A token that uniquely identifies an allocation group.
+/// A token that allows controlling when an allocation group is active or inactive.
 ///
-/// Allocation groups are the core grouping mechanism of `tracking-allocator` and drive much of its
-/// behavior.  While the allocator must be overridden, and a global track provided, no allocations
-/// are tracked unless a group is associated with the current thread making the allocation.
-///
-/// Practically speaking, allocation groups are simply an internal identifier that is used to
-/// identify the "owner" of an allocation.  Additional tags can be provided when acquire an
-/// allocation group token, which is provided to [`AllocationTracker`][crate::AllocationTracker]
-/// whenever an allocation occurs.
+/// Allocation groups represent the core mechanism for categorizing allocation activity, where the group must be active
+/// for (de)allocation events to be attributed to it. Practically speaking, allocation groups are simply an internal
+/// identifier that is used to identify the "owner" of an allocation.
 ///
 /// ## Usage
 ///
-/// In order for an allocation group to be attached to an allocation, its must be "entered."
-/// [`AllocationGroupToken`] functions similarly to something like a mutex, where "entering" the
-/// token conumes the token and provides a guard: [`AllocationGuard`].  This guard is tied to the
-/// allocation group being active: if the guard is dropped, or if it is exited manually, the
-/// allocation group is no longer active.
+/// In order for an allocation group to be attached to an allocation, it must be "entered." [`AllocationGroupToken`]
+/// functions similarly to something like a mutex, where "entering" the token conumes the token and provides a guard:
+/// [`AllocationGuard`].  This guard is tied to the allocation group being active: if the guard is dropped, or if it is
+/// exited manually, the allocation group is no longer active.
 ///
-/// [`AllocationGuard`] also tracks if another allocation group was active prior to entering, and
-/// ensures it is set back as the active allocation group when the guard is dropped.  This allows
-/// allocation groups to be nested within each other.
+/// [`AllocationGuard`] also tracks if another allocation group was active prior to entering, and ensures it is set back
+/// as the active allocation group when the guard is dropped.  This allows allocation groups to be nested within each
+/// other.
 pub struct AllocationGroupToken(AllocationGroupId);
 
 impl AllocationGroupToken {
     /// Registers an allocation group token.
-    ///
-    /// Allocation group IDs are assigned atomically and monotonically, and cannot exceed the
-    /// maximum value of the target's pointer size i.e. the upper bound for group IDs on 32-bit
-    /// platforms is around 4 billion.
-    ///
-    /// If this call would cause a group ID to be generated that had already been acquired within
-    /// this process, `None` will be returned.  Once `None` has been returned, all subsequent calls
-    /// to `register` will return `None`.
-    ///
-    /// Otherwise, `Some(token)` is returned.
+    /// 
+    /// Allocation groups use an internal identifier that is incremented atomically, and monotonically, when
+    /// registration occurs.  This identifier, thus, has a limit based on the pointer size of the architecture. In other
+    /// words, on 32-bit systems, a limit of 2^32 allocation groups can be registered before this identifier space is
+    /// exhausted.  On 64-bit systems, this limit is 2^64.
+    /// 
+    /// If the number of registered allocation groups exceeds the limit, `None` is returned. This is a permanent state
+    /// until the application exits. Otherwise, `Some` is returned.
     pub fn register() -> Option<AllocationGroupToken> {
         AllocationGroupId::register().map(AllocationGroupToken)
     }
 
-    /// The ID associated with this allocation group.
+    /// Gets the ID associated with this allocation group.
     pub fn id(&self) -> AllocationGroupId {
         self.0.clone()
     }
@@ -105,10 +97,10 @@ impl AllocationGroupToken {
         UnsafeAllocationGroupToken::new(self.0)
     }
 
-    /// Marks the associated allocation group as the active allocation group on this thread.
+    /// Enters the allocation group, marking it as the active allocation group on this thread.
     ///
-    /// If another allocation group is currently active, it is replaced, and restored either when
-    /// this allocation guard is dropped, or when [`AllocationGuard::exit`] is called.
+    /// If another allocation group is currently active, it is replaced, and restored either when this allocation guard
+    /// is dropped, or when [`AllocationGuard::exit`] is called.
     pub fn enter(self) -> AllocationGuard {
         AllocationGuard::enter(self)
     }
@@ -119,9 +111,9 @@ impl AllocationGroupToken {
 impl AllocationGroupToken {
     /// Attaches this allocation group to a tracing [`Span`][tracing::Span].
     ///
-    /// When the span is entered or exited, the allocation group will also transition from idle to
-    /// active, or active to idle.  In effect, all allocations that occur while the span is entered
-    /// will be associated with the allocation group.
+    /// When the span is entered or exited, the allocation group will also transition from inactive to active, and vise
+    /// versa.  In effect, all allocations that occur while the span is entered will be associated with the allocation
+    /// group.
     pub fn attach_to_span(self, span: &tracing::Span) {
         use crate::tracing::WithAllocationGroup;
 
@@ -193,21 +185,21 @@ impl GuardState {
         id
     }
 }
+
 /// Guard that updates the current thread to track allocations for the associated allocation group.
 ///
 /// ## Drop behavior
 ///
-/// This guard has a [`Drop`] implementation that resets the active allocation group back to the
-/// previous allocation group.  Calling `exit` is generally preferred for being explicit about when
-/// the allocation group begins and ends, though.
+/// This guard has a [`Drop`] implementation that resets the active allocation group back to the previous allocation
+/// group.  Calling [`exit`][exit] is generally preferred for being explicit about when the allocation group begins and
+/// ends, though.
 ///
 /// ## Moving across threads
 ///
-/// [`AllocationGuard`] is specifically marked as `!Send` as the active allocation group is tracked
-/// at a per-thread level.  If you acquire an `AllocationGuard` and need to resume computation on
-/// another thread, such as across an await point or when simply sending objects to another thread,
-/// you must first [`exit`][exit] the guard and move the resulting [`AllocationGroupToken`].  Once
-/// on the new thread, you can then reacquire the guard.
+/// [`AllocationGuard`] is specifically marked as `!Send` as the active allocation group is tracked at a per-thread
+/// level.  If you acquire an `AllocationGuard` and need to resume computation on another thread, such as across an
+/// await point or when simply sending objects to another thread, you must first [`exit`][exit] the guard and move the
+/// resulting [`AllocationGroupToken`].  Once on the new thread, you can then reacquire the guard.
 ///
 /// [exit]: AllocationGuard::exit
 pub struct AllocationGuard {
@@ -233,8 +225,7 @@ impl AllocationGuard {
         }
     }
 
-    /// Unmarks this allocation group as the active allocation group on this thread, resetting the
-    /// active allocation group to the previous value.
+    /// Exits the allocation group, restoring the previously active allocation group on this thread.
     pub fn exit(mut self) -> AllocationGroupToken {
         // Reset the current allocation token to the previous one.
         let current = self.state.transition_to_idle();
@@ -253,17 +244,15 @@ impl Drop for AllocationGuard {
 ///
 /// ## Safety
 ///
-/// While normally users would work directly with [`AllocationGroupToken`] and [`AllocationGuard`],
-/// we cannot store [`AllocationGuard`] in span data as it is `!Send`, and tracing spans can be sent
-/// across threads.
+/// While users would normally work directly with [`AllocationGroupToken`] and [`AllocationGuard`], we cannot store
+/// [`AllocationGuard`] in span data as it is `!Send`, and tracing spans can be sent across threads.
 ///
-/// However, `tracing` itself employs a guard for entering spans.  The guard is `!Send`, which
-/// ensures that the guard cannot be sent across threads.  Since the same guard is used to know when
-/// a span has been exited, `tracing` ensures that between a span being entered and exited, it
-/// cannot move threads.
+/// However, `tracing` itself employs a guard for entering spans.  The guard is `!Send`, which ensures that the guard
+/// cannot be sent across threads.  Since the same guard is used to know when a span has been exited, `tracing` ensures
+/// that between a span being entered and exited, it cannot move threads.
 ///
-/// Thus, we build off of that invariant, and use this stripped down token to manually enter and
-/// exit the allocation group in a specialized `tracing_subscriber` layer that we control.
+/// Thus, we build off of that invariant, and use this stripped down token to manually enter and exit the allocation
+/// group in a specialized `tracing_subscriber` layer that we control.
 #[cfg(feature = "tracing-compat")]
 pub(crate) struct UnsafeAllocationGroupToken {
     state: GuardState,
@@ -278,18 +267,17 @@ impl UnsafeAllocationGroupToken {
         }
     }
 
-    /// Marks the associated allocation group as the active allocation group on this thread.
+    /// Enters the allocation group, marking it as the active allocation group on this thread.
     ///
-    /// If another allocation group is currently active, it is replaced, and restored either when
-    /// this allocation guard is dropped, or when [`AllocationGuard::exit`] is called.
+    /// If another allocation group is currently active, it is replaced, and restored either when this allocation guard
+    /// is dropped, or when [`AllocationGuard::exit`] is called.
     ///
     /// Functionally equivalent to [`AllocationGroupToken::enter`].
     pub fn enter(&mut self) {
         self.state.transition_to_active();
     }
 
-    /// Unmarks this allocation group as the active allocation group on this thread, resetting the
-    /// active allocation group to the previous value.
+    /// Exits the allocation group, restoring the previously active allocation group on this thread.
     ///
     /// Functionally equivalent to [`AllocationGuard::exit`].
     pub fn exit(&mut self) {
@@ -297,9 +285,13 @@ impl UnsafeAllocationGroupToken {
     }
 }
 
-/// Calls `f` with the current allocation token, without tracking allocations in `f`.
+/// Calls `f` after suspending the allocation group, if it was not already suspended.
+///
+/// If the allocation group is not currently suspended, then `f` is called, after suspending it, with a reference to the
+/// suspended allocation group. If any other call to `try_with_suspended_allocation_group` happens while this method
+/// call is on the stack, `f` in those calls with itself not be called.
 #[inline(always)]
-pub(crate) fn with_suspended_allocation_group_id<F>(f: F)
+pub(crate) fn try_with_suspended_allocation_group<F>(f: F)
 where
     F: FnOnce(AllocationGroupId),
 {
@@ -314,4 +306,31 @@ where
             }
         },
     );
+}
+
+/// Calls `f` after suspending the allocation group.
+///
+/// In constrast to `try_with_suspended_allocation_group`, this method will always call `f` after attempting to suspend
+/// the current allocation group, even if it was already suspended.
+///
+/// In practice, this method is primaryl useful for "run this function and don't track any allocations at all" while
+/// `try_with_suspended_allocation_group` is primary useful for "run this function if nobody else is tracking
+/// allocations right now".
+#[inline(always)]
+pub(crate) fn with_suspended_allocation_group<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    CURRENT_ALLOCATION_TOKEN.with(
+        #[inline(always)]
+        |current| {
+            // The crux of avoiding reentrancy is `RefCell:try_borrow_mut`, as `try_borrow_mut` will only let one
+            // mutable borrow happen at a time. As we simply want to ensure that the allocation group is suspended, we
+            // don't care what the return value is: calling `try_borrow_mut` and holding on to the result until the end
+            // of the scope is sufficient to either suspend the allocation group or know that it's already suspended and
+            // will stay that way until we're done in this method.
+            let _result = current.try_borrow_mut();
+            f()
+        },
+    )
 }
