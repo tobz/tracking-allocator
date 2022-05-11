@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - ReleaseDate
 
+## [0.2.0] - 2022-05-11
+
 A big thanks to [@jswrenn](https://github.com/jswrenn) for their help on much of the newly-redesigned parts of the
 crate, including the inline allocation metadata and reentrancy protection logic.
 
