@@ -41,7 +41,7 @@ fn test() {
     let _ = AllocationRegistry::set_global_tracker(AllocatingTracker)
         .expect("no other global tracker should be set");
     AllocationRegistry::enable_tracking();
-    let local_token =
+    let mut local_token =
         AllocationGroupToken::register().expect("failed to register allocation group");
     let _guard = local_token.enter();
 

@@ -38,7 +38,7 @@ impl AllocationTracker for StdoutTracker {
         current_group_id: AllocationGroupId,
     ) {
         // When a deallocation occurs, as mentioned above, you have full access to the address, size of the allocation,
-        // as well as the group ID the allocation was made under _and_ the current allocation group ID.
+        // as well as the group ID the allocation was made under _and_ the active allocation group ID.
         //
         // This can be useful beyond just the obvious "track how many current bytes are allocated by the group", instead
         // going further to see the chain of where allocations end up, and so on.
@@ -66,7 +66,7 @@ fn main() {
     // deallocations within that scope to be tracked. Additionally, a group ID can be retrieved via
     // `AllocationGroupToken::id`. Group IDs implement the necessary traits to allow them to be used as a key/value in
     // many standard collections, which allows implementors to more easily store whatever information is necessary.
-    let local_token =
+    let mut local_token =
         AllocationGroupToken::register().expect("failed to register allocation group");
 
     // Now, get an allocation guard from our token.  This guard ensures the allocation group is marked as the current

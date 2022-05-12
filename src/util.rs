@@ -34,7 +34,7 @@ use std::marker::PhantomData;
 /// pointer.
 ///
 /// Pointers are `!Send` and `!Sync` by default, so adding one to a struct also makes that struct
-/// `!Send`/`!Sync`.  We don't have an actual pointer, we just fake it with PhantomData. 👻
+/// `!Send`/`!Sync`.  We don't have an actual pointer, we just fake it with `PhantomData`. 👻
 ///
 /// `AllocationGuard` cannot be allowed to be sent across threads, as doing so would violate the
 /// invariant that we drop our allocation group from the active allocation group TLS variable when

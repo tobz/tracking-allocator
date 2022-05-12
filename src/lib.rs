@@ -32,8 +32,9 @@
 //! [global_alloc]: std::alloc::GlobalAlloc
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
-#![warn(clippy::all)]
-#![warn(clippy::cargo)]
+#![deny(clippy::pedantic)]
+#![allow(clippy::inline_always)]
+#![allow(clippy::module_name_repetitions)]
 use std::{
     error, fmt,
     sync::{
@@ -43,6 +44,7 @@ use std::{
 };
 
 mod allocator;
+mod stack;
 mod token;
 #[cfg(feature = "tracing-compat")]
 mod tracing;
@@ -112,7 +114,7 @@ impl Tracker {
 
     /// Tracks when an allocation has occurred.
     fn allocated(&self, addr: usize, size: usize, group_id: AllocationGroupId) {
-        self.tracker.allocated(addr, size, group_id)
+        self.tracker.allocated(addr, size, group_id);
     }
 
     /// Tracks when a deallocation has occurred.
@@ -124,7 +126,7 @@ impl Tracker {
         current_group_id: AllocationGroupId,
     ) {
         self.tracker
-            .deallocated(addr, size, source_group_id, current_group_id)
+            .deallocated(addr, size, source_group_id, current_group_id);
     }
 }
 

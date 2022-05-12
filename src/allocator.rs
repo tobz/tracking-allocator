@@ -14,6 +14,7 @@ pub struct Allocator<A> {
 
 impl<A> Allocator<A> {
     /// Creates a new `Allocator` that wraps another allocator.
+    #[must_use]
     pub const fn from_allocator(allocator: A) -> Self {
         Self { inner: allocator }
     }
@@ -21,6 +22,7 @@ impl<A> Allocator<A> {
 
 impl Allocator<System> {
     /// Creates a new `Allocator` that wraps the system allocator.
+    #[must_use]
     pub const fn system() -> Allocator<System> {
         Self::from_allocator(System)
     }
@@ -36,6 +38,10 @@ impl<A: GlobalAlloc> Allocator<A> {
         }
 
         // Zero out the group ID field to make sure it's in the `None` state.
+        //
+        // SAFETY: We know that `actual_ptr` is at least aligned enough for casting it to `*mut usize` as the layout for
+        // the allocation backing this pointer ensures the first field in the layout is `usize.
+        #[allow(clippy::cast_ptr_alignment)]
         let group_id_ptr = actual_ptr.cast::<usize>();
         group_id_ptr.write(0);
 
@@ -91,6 +97,10 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Allocator<A> {
         // allocation it refers to, was allocated by us. Thus, since we wrap _all_ allocations, we know that this object
         // pointer can be safely subtracted by `offset_to_object` to get back to the group ID field in our wrapper.
         let actual_ptr = object_ptr.wrapping_sub(offset_to_object);
+
+        // SAFETY: We know that `actual_ptr` is at least aligned enough for casting it to `*mut usize` as the layout for
+        // the allocation backing this pointer ensures the first field in the layout is `usize.
+        #[allow(clippy::cast_ptr_alignment)]
         let raw_group_id = actual_ptr.cast::<usize>().read();
 
         // Deallocate before tracking, just to make sure we're reclaiming memory as soon as possible.
@@ -120,7 +130,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Allocator<A> {
 fn get_wrapped_layout(object_layout: Layout) -> (Layout, usize) {
     static HEADER_LAYOUT: Layout = Layout::new::<usize>();
 
-    // We generate a new allocation layout that gives us a location to store the current allocation group ID ahead
+    // We generate a new allocation layout that gives us a location to store the active allocation group ID ahead
     // of the requested allocation, which lets us always attempt to retrieve it on the deallocation path. We'll
     // always set this to zero, and conditionally update it to the actual allocation group ID if tracking is enabled.
     let (actual_layout, offset_to_object) = HEADER_LAYOUT

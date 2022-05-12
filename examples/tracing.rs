@@ -45,7 +45,7 @@ impl AllocationTracker for StdoutTracker {
         current_group_id: AllocationGroupId,
     ) {
         // When a deallocation occurs, as mentioned above, you have full access to the address, size of the allocation,
-        // as well as the group ID the allocation was made under _and_ the current allocation group ID.
+        // as well as the group ID the allocation was made under _and_ the active allocation group ID.
         //
         // This can be useful beyond just the obvious "track how many current bytes are allocated by the group", instead
         // going further to see the chain of where allocations end up, and so on.
@@ -129,7 +129,7 @@ fn main() {
     //
     // Like the `stdout` example mentions, allocations will always know which allocation group they were allocated
     // within, and deallocations will not only list which allocation group the pointer was allocated within, but also
-    // the current allocation group.
+    // the active allocation group.
 }
 
 async fn ping_pong(

@@ -1,4 +1,4 @@
-use std::{any::TypeId, marker::PhantomData};
+use std::{any::TypeId, marker::PhantomData, ptr::addr_of};
 
 use tracing::{Dispatch, Id, Subscriber};
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
@@ -16,7 +16,7 @@ impl WithAllocationGroup {
         id: &Id,
         unsafe_token: UnsafeAllocationGroupToken,
     ) {
-        (self.with_allocation_group)(dispatch, id, unsafe_token)
+        (self.with_allocation_group)(dispatch, id, unsafe_token);
     }
 }
 
@@ -35,7 +35,8 @@ impl<S> AllocationLayer<S>
 where
     S: Subscriber + for<'span> LookupSpan<'span>,
 {
-    /// Create a new `TracingLayer`.
+    /// Creates a new [`AllocationLayer`].
+    #[must_use]
     pub fn new() -> Self {
         let ctx = WithAllocationGroup {
             with_allocation_group: Self::with_allocation_group,
@@ -91,9 +92,9 @@ where
 
     unsafe fn downcast_raw(&self, id: TypeId) -> Option<*const ()> {
         match id {
-            id if id == TypeId::of::<Self>() => Some(self as *const _ as *const ()),
+            id if id == TypeId::of::<Self>() => Some(addr_of!(self).cast::<()>()),
             id if id == TypeId::of::<WithAllocationGroup>() => {
-                Some(&self.ctx as *const _ as *const ())
+                Some(addr_of!(self.ctx).cast::<()>())
             }
             _ => None,
         }

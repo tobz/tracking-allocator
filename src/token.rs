@@ -1,19 +1,26 @@
 use std::{
     cell::RefCell,
-    mem,
     num::NonZeroUsize,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use crate::util::PhantomNotSend;
+use crate::{stack::GroupStack, util::PhantomNotSend};
 
 thread_local! {
     /// The currently executing allocation token.
     ///
     /// Any allocations which occur on this thread will be associated with whichever token is
     /// present at the time of the allocation.
-    pub (crate) static CURRENT_ALLOCATION_TOKEN: RefCell<AllocationGroupId> =
-        RefCell::new(AllocationGroupId::ROOT);
+    pub(crate) static LOCAL_ALLOCATION_GROUP_STACK: RefCell<GroupStack> =
+        RefCell::new(GroupStack::new());
+}
+
+fn push_group_to_stack(group: AllocationGroupId) {
+    LOCAL_ALLOCATION_GROUP_STACK.with(|stack| stack.borrow_mut().push(group));
+}
+
+fn pop_group_from_stack() -> AllocationGroupId {
+    LOCAL_ALLOCATION_GROUP_STACK.with(|stack| stack.borrow_mut().pop())
 }
 
 /// The identifier that uniquely identifiers an allocation group.
@@ -34,6 +41,7 @@ impl AllocationGroupId {
     pub const ROOT: Self = Self(unsafe { NonZeroUsize::new_unchecked(1) });
 
     /// Gets the integer representation of this group ID.
+    #[must_use]
     pub const fn as_usize(&self) -> NonZeroUsize {
         self.0
     }
@@ -75,12 +83,12 @@ pub struct AllocationGroupToken(AllocationGroupId);
 
 impl AllocationGroupToken {
     /// Registers an allocation group token.
-    /// 
+    ///
     /// Allocation groups use an internal identifier that is incremented atomically, and monotonically, when
     /// registration occurs.  This identifier, thus, has a limit based on the pointer size of the architecture. In other
     /// words, on 32-bit systems, a limit of 2^32 allocation groups can be registered before this identifier space is
     /// exhausted.  On 64-bit systems, this limit is 2^64.
-    /// 
+    ///
     /// If the number of registered allocation groups exceeds the limit, `None` is returned. This is a permanent state
     /// until the application exits. Otherwise, `Some` is returned.
     pub fn register() -> Option<AllocationGroupToken> {
@@ -88,6 +96,7 @@ impl AllocationGroupToken {
     }
 
     /// Gets the ID associated with this allocation group.
+    #[must_use]
     pub fn id(&self) -> AllocationGroupId {
         self.0.clone()
     }
@@ -101,7 +110,7 @@ impl AllocationGroupToken {
     ///
     /// If another allocation group is currently active, it is replaced, and restored either when this allocation guard
     /// is dropped, or when [`AllocationGuard::exit`] is called.
-    pub fn enter(self) -> AllocationGuard {
+    pub fn enter(&mut self) -> AllocationGuard<'_> {
         AllocationGuard::enter(self)
     }
 }
@@ -130,69 +139,13 @@ impl AllocationGroupToken {
     }
 }
 
-enum GuardState {
-    // Guard is idle.  We aren't the active allocation group.
-    Idle(AllocationGroupId),
-
-    // Guard is active.  We're the active allocation group, so we hold on to the previous
-    // allocation group ID, if there was one, so we can switch back to it when we transition to
-    // being idle.
-    Active(AllocationGroupId),
-}
-
-impl GuardState {
-    fn transition_to_active(&mut self) {
-        let new_state = match self {
-            Self::Idle(id) => {
-                // Set the current allocation token to the new token, keeping the previous.
-                let previous = CURRENT_ALLOCATION_TOKEN.with(|current| current.replace(id.clone()));
-                Self::Active(previous)
-            }
-            Self::Active(ref previous) => {
-                let current = CURRENT_ALLOCATION_TOKEN.with(|current| current.borrow().clone());
-                panic!(
-                    "tid {:?}: transitioning active->active is invalid; current={:?} previous={:?}",
-                    std::thread::current().id(),
-                    current,
-                    previous
-                );
-            }
-        };
-        *self = new_state;
-    }
-
-    fn transition_to_idle(&mut self) -> AllocationGroupId {
-        match self.try_transition_to_idle() {
-            None => panic!(
-                "tid {:?}: transitioning idle->idle is invalid",
-                std::thread::current().id()
-            ),
-            Some(id) => id,
-        }
-    }
-
-    fn try_transition_to_idle(&mut self) -> Option<AllocationGroupId> {
-        let (id, new_state) = match self {
-            Self::Idle(_) => return None,
-            Self::Active(previous) => {
-                // Reset the current allocation token to the previous one:
-                let current = CURRENT_ALLOCATION_TOKEN
-                    .with(|current| mem::replace(&mut *current.borrow_mut(), previous.clone()));
-                (Some(current.clone()), Self::Idle(current))
-            }
-        };
-        *self = new_state;
-        id
-    }
-}
-
 /// Guard that updates the current thread to track allocations for the associated allocation group.
 ///
 /// ## Drop behavior
 ///
-/// This guard has a [`Drop`] implementation that resets the active allocation group back to the previous allocation
-/// group.  Calling [`exit`][exit] is generally preferred for being explicit about when the allocation group begins and
-/// ends, though.
+/// This guard has a [`Drop`] implementation that resets the active allocation group back to the last previously active
+/// allocation group.  Calling [`exit`][exit] is generally preferred for being explicit about when the allocation group
+/// begins and ends, though.
 ///
 /// ## Moving across threads
 ///
@@ -202,8 +155,8 @@ impl GuardState {
 /// resulting [`AllocationGroupToken`].  Once on the new thread, you can then reacquire the guard.
 ///
 /// [exit]: AllocationGuard::exit
-pub struct AllocationGuard {
-    state: GuardState,
+pub struct AllocationGuard<'token> {
+    token: &'token mut AllocationGroupToken,
 
     /// ```compile_fail
     /// use tracking_allocator::AllocationGuard;
@@ -214,29 +167,36 @@ pub struct AllocationGuard {
     _ns: PhantomNotSend,
 }
 
-impl AllocationGuard {
-    pub(crate) fn enter(token: AllocationGroupToken) -> AllocationGuard {
-        let mut state = GuardState::Idle(token.0);
-        state.transition_to_active();
+impl<'token> AllocationGuard<'token> {
+    pub(crate) fn enter(token: &'token mut AllocationGroupToken) -> Self {
+        // Push this group onto the stack.
+        push_group_to_stack(token.id());
 
-        AllocationGuard {
-            state,
+        Self {
+            token,
             _ns: PhantomNotSend::default(),
         }
     }
 
-    /// Exits the allocation group, restoring the previously active allocation group on this thread.
-    pub fn exit(mut self) -> AllocationGroupToken {
-        // Reset the current allocation token to the previous one.
-        let current = self.state.transition_to_idle();
+    fn exit_inner(&mut self) {
+        #[allow(unused_variables)]
+        let current = pop_group_from_stack();
+        debug_assert_eq!(
+            current,
+            self.token.id(),
+            "popped group from stack but got unexpected group"
+        );
+    }
 
-        AllocationGroupToken(current)
+    /// Exits the allocation group, restoring the previously active allocation group on this thread.
+    pub fn exit(mut self) {
+        self.exit_inner();
     }
 }
 
-impl Drop for AllocationGuard {
+impl<'token> Drop for AllocationGuard<'token> {
     fn drop(&mut self) {
-        let _ = self.state.try_transition_to_idle();
+        self.exit_inner();
     }
 }
 
@@ -255,16 +215,14 @@ impl Drop for AllocationGuard {
 /// group in a specialized `tracing_subscriber` layer that we control.
 #[cfg(feature = "tracing-compat")]
 pub(crate) struct UnsafeAllocationGroupToken {
-    state: GuardState,
+    id: AllocationGroupId,
 }
 
 #[cfg(feature = "tracing-compat")]
 impl UnsafeAllocationGroupToken {
     /// Creates a new `UnsafeAllocationGroupToken`.
     pub fn new(id: AllocationGroupId) -> Self {
-        Self {
-            state: GuardState::Idle(id),
-        }
+        Self { id }
     }
 
     /// Enters the allocation group, marking it as the active allocation group on this thread.
@@ -274,62 +232,67 @@ impl UnsafeAllocationGroupToken {
     ///
     /// Functionally equivalent to [`AllocationGroupToken::enter`].
     pub fn enter(&mut self) {
-        self.state.transition_to_active();
+        push_group_to_stack(self.id.clone());
     }
 
     /// Exits the allocation group, restoring the previously active allocation group on this thread.
     ///
     /// Functionally equivalent to [`AllocationGuard::exit`].
     pub fn exit(&mut self) {
-        let _ = self.state.transition_to_idle();
+        #[allow(unused_variables)]
+        let current = pop_group_from_stack();
+        debug_assert_eq!(
+            current, self.id,
+            "popped group from stack but got unexpected group"
+        );
     }
 }
 
-/// Calls `f` after suspending the allocation group, if it was not already suspended.
+/// Calls `f` after suspending the active allocation group, if it was not already suspended.
 ///
-/// If the allocation group is not currently suspended, then `f` is called, after suspending it, with a reference to the
-/// suspended allocation group. If any other call to `try_with_suspended_allocation_group` happens while this method
-/// call is on the stack, `f` in those calls with itself not be called.
+/// If the active allocation group is not currently suspended, then `f` is called, after suspending it, with a reference
+/// to the suspended allocation group. If any other call to `try_with_suspended_allocation_group` happens while this
+/// method call is on the stack, `f` in those calls with itself not be called.
 #[inline(always)]
 pub(crate) fn try_with_suspended_allocation_group<F>(f: F)
 where
     F: FnOnce(AllocationGroupId),
 {
-    CURRENT_ALLOCATION_TOKEN.with(
+    let _ = LOCAL_ALLOCATION_GROUP_STACK.try_with(
         #[inline(always)]
-        |current| {
+        |stack| {
             // The crux of avoiding reentrancy is `RefCell:try_borrow_mut`, which allows callers to skip trying to run
-            // `f` if they cannot mutably borrow the current allocation group ID. As `try_borrow_mut` will only let one
+            // `f` if they cannot mutably borrow the local allocation group stack. As `try_borrow_mut` will only let one
             // mutable borrow happen at a time, the tracker logic is never reentrant.
-            if let Ok(group_id) = current.try_borrow_mut() {
-                f(AllocationGroupId(group_id.0));
+            if let Ok(stack) = stack.try_borrow_mut() {
+                f(stack.current());
             }
         },
     );
 }
 
-/// Calls `f` after suspending the allocation group.
+/// Calls `f` after suspending the active allocation group.
 ///
 /// In constrast to `try_with_suspended_allocation_group`, this method will always call `f` after attempting to suspend
-/// the current allocation group, even if it was already suspended.
+/// the active allocation group, even if it was already suspended.
 ///
-/// In practice, this method is primaryl useful for "run this function and don't track any allocations at all" while
-/// `try_with_suspended_allocation_group` is primary useful for "run this function if nobody else is tracking
+/// In practice, this method is primarily useful for "run this function and don't track any allocations at all" while
+/// `try_with_suspended_allocation_group` is primarily useful for "run this function if nobody else is tracking
 /// allocations right now".
 #[inline(always)]
 pub(crate) fn with_suspended_allocation_group<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,
 {
-    CURRENT_ALLOCATION_TOKEN.with(
+    LOCAL_ALLOCATION_GROUP_STACK.with(
         #[inline(always)]
-        |current| {
+        |stack| {
             // The crux of avoiding reentrancy is `RefCell:try_borrow_mut`, as `try_borrow_mut` will only let one
             // mutable borrow happen at a time. As we simply want to ensure that the allocation group is suspended, we
             // don't care what the return value is: calling `try_borrow_mut` and holding on to the result until the end
             // of the scope is sufficient to either suspend the allocation group or know that it's already suspended and
             // will stay that way until we're done in this method.
-            let _result = current.try_borrow_mut();
+            let _result = stack.try_borrow_mut();
             f()
         },
     )

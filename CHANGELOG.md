@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - ReleaseDate
 
+### Changed
+
+- `AllocationGroupToken::enter` no longer consumes itself, and `AllocationGuard` is now bound by the lifetime of the
+  token. This should make it a generally more flexible and useful primitive, as the group can be entered purely with
+  mutable access to the token, such as if it is stored in something like a `Mutex<T>`.
+
+### Fixed
+
+- Reworked the logic around tracking the active allocation group as it had an edge case when used with `tracing::Span`
+  that lead to a panic if a span was cloned/entered multiple times on the same thread. This is a common scenario for
+  asynchronous applications that spawn multiple copies of a task to process work in parallel, which all share the same span.
+
 ## [0.2.0] - 2022-05-11
 
 A big thanks to [@jswrenn](https://github.com/jswrenn) for their help on much of the newly-redesigned parts of the
