@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - ReleaseDate
 
+## [0.3.0] - 2022-05-12
+
 ### Changed
 
 - `AllocationGroupToken::enter` no longer consumes itself, and `AllocationGuard` is now bound by the lifetime of the
