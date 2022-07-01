@@ -19,7 +19,13 @@ static DEALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 struct AllocatingTracker;
 
 impl AllocationTracker for AllocatingTracker {
-    fn allocated(&self, _addr: usize, _size: usize, _group_id: AllocationGroupId) {
+    fn allocated(
+        &self,
+        _addr: usize,
+        _object_size: usize,
+        _wrapped_size: usize,
+        _group_id: AllocationGroupId,
+    ) {
         ALLOCATIONS.fetch_add(1, Ordering::SeqCst);
         let _ = Box::new([0u64; 64]);
     }
@@ -27,7 +33,8 @@ impl AllocationTracker for AllocatingTracker {
     fn deallocated(
         &self,
         _addr: usize,
-        _size: usize,
+        _object_size: usize,
+        _wrapped_size: usize,
         _source_group_id: AllocationGroupId,
         _current_group_id: AllocationGroupId,
     ) {

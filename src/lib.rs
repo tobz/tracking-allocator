@@ -77,7 +77,18 @@ pub trait AllocationTracker {
     /// implementors can allocate/deallocate without risk of reentrancy bugs. It does mean, however, that the
     /// allocations/deallocations that occur will be effectively lost, so implementors should ensure that the only data
     /// they deallocate in the tracker is data that was similarly allocated, and vise versa.
-    fn allocated(&self, addr: usize, size: usize, group_id: AllocationGroupId);
+    ///
+    /// As the allocator will customize the layout to include the group ID which owns an allocation, we provide two
+    /// sizes: the object size and the wrapped size. The object size is the original layout of the allocation, and is
+    /// valid against the given object address. The wrapped size is the true size of the underlying allocation that is
+    /// made, and represents the actual memory usage for the given allocation.
+    fn allocated(
+        &self,
+        addr: usize,
+        object_size: usize,
+        wrapped_size: usize,
+        group_id: AllocationGroupId,
+    );
 
     /// Tracks when a deallocation has occurred.
     ///
@@ -89,10 +100,16 @@ pub trait AllocationTracker {
     /// implementors can allocate/deallocate without risk of reentrancy bugs. It does mean, however, that the
     /// allocations/deallocations that occur will be effectively lost, so implementors should ensure that the only data
     /// they deallocate in the tracker is data that was similarly allocated, and vise versa.
+    ///
+    /// As the allocator will customize the layout to include the group ID which owns an allocation, we provide two
+    /// sizes: the object size and the wrapped size. The object size is the original layout of the allocation, and is
+    /// valid against the given object address. The wrapped size is the true size of the underlying allocation that is
+    /// made, and represents the actual memory usage for the given allocation.
     fn deallocated(
         &self,
         addr: usize,
-        size: usize,
+        object_size: usize,
+        wrapped_size: usize,
         source_group_id: AllocationGroupId,
         current_group_id: AllocationGroupId,
     );
@@ -113,20 +130,33 @@ impl Tracker {
     }
 
     /// Tracks when an allocation has occurred.
-    fn allocated(&self, addr: usize, size: usize, group_id: AllocationGroupId) {
-        self.tracker.allocated(addr, size, group_id);
+    fn allocated(
+        &self,
+        addr: usize,
+        object_size: usize,
+        wrapped_size: usize,
+        group_id: AllocationGroupId,
+    ) {
+        self.tracker
+            .allocated(addr, object_size, wrapped_size, group_id);
     }
 
     /// Tracks when a deallocation has occurred.
     fn deallocated(
         &self,
         addr: usize,
-        size: usize,
+        object_size: usize,
+        wrapped_size: usize,
         source_group_id: AllocationGroupId,
         current_group_id: AllocationGroupId,
     ) {
-        self.tracker
-            .deallocated(addr, size, source_group_id, current_group_id);
+        self.tracker.deallocated(
+            addr,
+            object_size,
+            wrapped_size,
+            source_group_id,
+            current_group_id,
+        );
     }
 }
 
@@ -173,15 +203,15 @@ impl AllocationRegistry {
             .compare_exchange(
                 UNINITIALIZED,
                 INITIALIZING,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
             )
             .is_ok()
         {
             unsafe {
                 GLOBAL_TRACKER = Some(Tracker::from_allocation_tracker(tracker));
             }
-            GLOBAL_INIT.store(INITIALIZED, Ordering::SeqCst);
+            GLOBAL_INIT.store(INITIALIZED, Ordering::Release);
             Ok(())
         } else {
             Err(SetTrackerError { _sealed: () })
@@ -218,9 +248,9 @@ impl AllocationRegistry {
     /// YOU'VE BEEN WARNED. :)
     #[doc(hidden)]
     pub unsafe fn clear_global_tracker() {
-        GLOBAL_INIT.store(INITIALIZING, Ordering::SeqCst);
+        GLOBAL_INIT.store(INITIALIZING, Ordering::Release);
         GLOBAL_TRACKER = None;
-        GLOBAL_INIT.store(UNINITIALIZED, Ordering::SeqCst);
+        GLOBAL_INIT.store(UNINITIALIZED, Ordering::Release);
     }
 }
 
@@ -232,7 +262,7 @@ fn get_global_tracker() -> Option<&'static Tracker> {
     }
 
     // Tracker has to actually be installed.
-    if GLOBAL_INIT.load(Ordering::SeqCst) != INITIALIZED {
+    if GLOBAL_INIT.load(Ordering::Acquire) != INITIALIZED {
         return None;
     }
 

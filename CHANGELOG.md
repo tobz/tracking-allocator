@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - ReleaseDate
 
+## Changed
+
+- `AllocationTracker::allocated` and `AllocationTracker::deallocated` now both get the size of the requested allocation,
+  as well as the size of the wrapped allocation that `tracking-allocator` performs to store the group Id of the
+  allocation owner. This allows users to understand the true size of allocations being performed while also
+  understanding the allocations their applications are requesting.
+
 ## [0.3.0] - 2022-05-12
 
 ### Changed

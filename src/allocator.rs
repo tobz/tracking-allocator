@@ -29,7 +29,10 @@ impl Allocator<System> {
 }
 
 impl<A: GlobalAlloc> Allocator<A> {
-    unsafe fn get_wrapped_allocation(&self, object_layout: Layout) -> (*mut usize, *mut u8) {
+    unsafe fn get_wrapped_allocation(
+        &self,
+        object_layout: Layout,
+    ) -> (*mut usize, *mut u8, Layout) {
         // Allocate our wrapped layout and make sure the allocation succeeded.
         let (actual_layout, offset_to_object) = get_wrapped_layout(object_layout);
         let actual_ptr = self.inner.alloc(actual_layout);
@@ -49,7 +52,7 @@ impl<A: GlobalAlloc> Allocator<A> {
         // `offset_to_object` as it would land within the allocation.
         let object_ptr = actual_ptr.wrapping_add(offset_to_object);
 
-        (group_id_ptr, object_ptr)
+        (group_id_ptr, object_ptr, actual_layout)
     }
 }
 
@@ -62,9 +65,10 @@ impl Default for Allocator<System> {
 unsafe impl<A: GlobalAlloc> GlobalAlloc for Allocator<A> {
     #[track_caller]
     unsafe fn alloc(&self, object_layout: Layout) -> *mut u8 {
-        let object_size = object_layout.size();
-        let (group_id_ptr, object_ptr) = self.get_wrapped_allocation(object_layout);
+        let (group_id_ptr, object_ptr, wrapped_layout) = self.get_wrapped_allocation(object_layout);
         let object_addr = object_ptr as usize;
+        let object_size = object_layout.size();
+        let wrapped_size = wrapped_layout.size();
 
         if let Some(tracker) = get_global_tracker() {
             try_with_suspended_allocation_group(
@@ -78,7 +82,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Allocator<A> {
                     // and that includes even if we just used the rule of "always attribute allocations to the root
                     // allocation group by default".
                     group_id_ptr.write(group_id.as_usize().get());
-                    tracker.allocated(object_addr, object_size, group_id);
+                    tracker.allocated(object_addr, object_size, wrapped_size, group_id);
                 },
             );
         }
@@ -108,6 +112,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Allocator<A> {
 
         let object_addr = object_ptr as usize;
         let object_size = object_layout.size();
+        let wrapped_size = wrapped_layout.size();
 
         if let Some(tracker) = get_global_tracker() {
             if let Some(source_group_id) = AllocationGroupId::from_raw(raw_group_id) {
@@ -117,6 +122,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Allocator<A> {
                         tracker.deallocated(
                             object_addr,
                             object_size,
+                            wrapped_size,
                             source_group_id,
                             current_group_id,
                         );

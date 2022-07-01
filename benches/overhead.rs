@@ -13,12 +13,20 @@ static ALLOCATOR: Allocator<System> = Allocator::system();
 struct NoopTracker;
 
 impl AllocationTracker for NoopTracker {
-    fn allocated(&self, _addr: usize, _size: usize, _group_id: AllocationGroupId) {}
+    fn allocated(
+        &self,
+        _addr: usize,
+        _object_size: usize,
+        _wrapped_size: usize,
+        _group_id: AllocationGroupId,
+    ) {
+    }
 
     fn deallocated(
         &self,
         _addr: usize,
-        _size: usize,
+        _object_size: usize,
+        _wrapped_size: usize,
         _source_group_id: AllocationGroupId,
         _current_group_id: AllocationGroupId,
     ) {
@@ -51,8 +59,6 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
 
     c.bench_function("enabled/noop tracker", |b| {
-        // This should not change the timing because we always check to see if tracking enabled
-        // first, so the tracker being set won't drive any other operations.
         unsafe {
             AllocationRegistry::clear_global_tracker();
         }
