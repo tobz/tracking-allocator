@@ -30,7 +30,9 @@ impl AllocationTracker for StdoutTracker {
         // Allocations have all the pertinent information upfront, which you may or may not want to store for further
         // analysis. Notably, deallocations also know how large they are, and what group ID they came from, so you
         // typically don't have to store much data for correlating deallocations with their original allocation.
-        println!(
+        // DO NOT USE PRINTLN! IN YOUR TRACKER IMPLEMENTATION AS IT IS LINE BUFFERED AND WILL CAUSE DEADLOCKS
+        // USE EPRINTLN! INSTEAD
+        eprintln!(
             "allocation -> addr=0x{:0x} object_size={} wrapped_size={} group_id={:?}",
             addr, object_size, wrapped_size, group_id
         );
@@ -49,7 +51,9 @@ impl AllocationTracker for StdoutTracker {
         //
         // This can be useful beyond just the obvious "track how many current bytes are allocated by the group", instead
         // going further to see the chain of where allocations end up, and so on.
-        println!(
+        // DO NOT USE PRINTLN! IN YOUR TRACKER IMPLEMENTATION AS IT IS LINE BUFFERED AND CAN CAUSE DEADLOCKS
+        // USE EPRINTLN! INSTEAD
+        eprintln!(
             "deallocation -> addr=0x{:0x} object_size={} wrapped_size={} source_group_id={:?} current_group_id={:?}",
             addr, object_size, wrapped_size, source_group_id, current_group_id
         );
